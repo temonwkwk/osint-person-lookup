@@ -3,6 +3,8 @@
 
 Pipeline Flow:
   1. Email check first (Holehe) -> detects verified registered platforms (IG, FB, Twitter, Spotify, dll).
+     - If Name was initially empty: perform reverse username search from email prefix to discover real name.
+     - Auto-Feedback Loop: If real name is discovered, auto-feed it into Step 2.
   2. Targeted multi-step Google search -> prioritize search queries based on platforms proven in Step 1:
      - General: "{name}"
      - Targeted: "{name}" instagram, "{name}" site:instagram.com, "{name}" facebook, dst.
@@ -318,6 +320,24 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
     return out
 
 
+def extract_name_from_username_search(results: list[tuple[str, str]], username: str) -> str:
+    """Attempt to extract real name from reverse search results of a username."""
+    patterns = [
+        re.compile(r"milik\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s+(?:di|on|at|\-|\(|•|\|)", re.I),
+        re.compile(r"by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s+(?:on|at|\-|\(|•|\|)", re.I),
+        re.compile(rf"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){{1,3}})\s*(?:\(@?{re.escape(username)}\)|•|\-|\|)", re.I),
+    ]
+    for url, title in results:
+        for p in patterns:
+            m = p.search(title)
+            if m:
+                cand = m.group(1).strip()
+                words = cand.split()
+                if 2 <= len(words) <= 4:
+                    return cand
+    return ""
+
+
 PLATFORM_TERMS = [
     ("instagram", "instagram"),
     ("tiktok", "tiktok"),
@@ -465,7 +485,6 @@ def org_phrases(title: str, name: str) -> list[str]:
         if ntoks and set(words) <= ntoks:
             continue
         if any(w in ORG_KEYWORDS for w in words):
-            # Clean emoji/trailing punctuation
             cleaned_seg = re.sub(r"[^\w\s&'-]+", "", seg_clean).strip()
             if cleaned_seg and cleaned_seg not in out:
                 out.append(cleaned_seg)
@@ -664,6 +683,16 @@ def main() -> int:
             holehe = run_holehe(email)
             verified_platforms = holehe.get("used", [])
             print(f"           Terdaftar di: {', '.join(verified_platforms) or '-'}", flush=True)
+
+        # Auto-Feedback Loop: If name is initially empty, discover real name from email prefix
+        if not name and email and "@" in email:
+            email_user = email.split("@")[0].lower()
+            print(f"  [Step 1b] Mencari nama dari username email ({email_user})...", flush=True)
+            rev_results = eng.search(f'"{email_user}"')
+            discovered_name = extract_name_from_username_search(rev_results, email_user)
+            if discovered_name:
+                name = discovered_name
+                print(f"           ✅ Nama teridentifikasi: {name}", flush=True)
 
         # -------------------------------------------------------------
         # STEP 2: Targeted Multi-query Google Search
