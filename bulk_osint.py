@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Bulk OSINT lookup from XLSX/CSV -> writes <name>_result.xlsx with a Notes column.
 
-Design: search results come from a JSON cache that the agent fills using the
-Hermes `web_search` tool (reliable), with an optional live DuckDuckGo fallback
-for standalone use. Moriarty is intentionally skipped; Google-style search runs
-first because it is the highest-yield step.
-
-Flow per row (sequential):
-  1. Name search -> Instagram / TikTok / X / Facebook / LinkedIn handles
-  2. Community probe on the strongest handle + name -> where they are active
-  3. Holehe on the email -> registered platforms
-  4. Maigret on candidate usernames (optional, --maigret, slow)
+New Pipeline Flow:
+  1. Email check first (Holehe) -> detects verified registered platforms (IG, FB, Twitter, Spotify, dll).
+  2. Targeted multi-step Google search -> prioritize search queries based on platforms proven in Step 1:
+     - General: "{name}"
+     - Targeted: "{name}" instagram, "{name}" site:instagram.com, "{name}" facebook, dst.
+     - Secondary: search other major platforms.
+  3. Community probe on the strongest handle + name -> where they are active.
+  4. Maigret on candidate usernames (optional, --maigret).
+  5. Consolidated Notes generation with cross-verification score.
 
 Two-pass usage with the cache (recommended):
   pass 1: python3 bulk_osint.py IN.xlsx --search-cache c.json --dump-queries q.json
@@ -47,6 +46,8 @@ SOCIAL_PATTERNS = {
     "linkedin": re.compile(r"https?://(?:[a-z]{2}\.)?linkedin\.com/in/([A-Za-z0-9\-_%]+)", re.I),
     "youtube": re.compile(r"https?://(?:www\.)?youtube\.com/@([A-Za-z0-9_.\-]+)", re.I),
     "github": re.compile(r"https?://(?:www\.)?github\.com/([A-Za-z0-9\-]+)/?$", re.I),
+    "pinterest": re.compile(r"https?://(?:www\.)?pinterest\.(?:com|[a-z]{2})/([A-Za-z0-9_.\-]+)", re.I),
+    "spotify": re.compile(r"https?://open\.spotify\.com/user/([A-Za-z0-9_.\-]+)", re.I),
 }
 
 RESERVED = {
@@ -57,9 +58,32 @@ RESERVED = {
     "intent", "status", "hashtag", "people", "photo", "media", "tag", "discover",
 }
 
+# Mapping holehe detected services to platform keys and search terms
+HOLEHE_PLATFORM_MAP = {
+    "instagram": ("instagram", "instagram", "site:instagram.com", "IG"),
+    "instagram.com": ("instagram", "instagram", "site:instagram.com", "IG"),
+    "facebook": ("facebook", "facebook", "site:facebook.com", "FB"),
+    "facebook.com": ("facebook", "facebook", "site:facebook.com", "FB"),
+    "twitter": ("twitter", "twitter", "site:twitter.com OR site:x.com", "X"),
+    "twitter.com": ("twitter", "twitter", "site:twitter.com OR site:x.com", "X"),
+    "x.com": ("twitter", "twitter", "site:twitter.com OR site:x.com", "X"),
+    "tiktok": ("tiktok", "tiktok", "site:tiktok.com", "TikTok"),
+    "tiktok.com": ("tiktok", "tiktok", "site:tiktok.com", "TikTok"),
+    "linkedin": ("linkedin", "linkedin", "site:linkedin.com", "LinkedIn"),
+    "linkedin.com": ("linkedin", "linkedin", "site:linkedin.com", "LinkedIn"),
+    "github": ("github", "github", "site:github.com", "GitHub"),
+    "github.com": ("github", "github", "site:github.com", "GitHub"),
+    "pinterest": ("pinterest", "pinterest", "site:pinterest.com", "Pinterest"),
+    "pinterest.com": ("pinterest", "pinterest", "site:pinterest.com", "Pinterest"),
+    "spotify": ("spotify", "spotify", "site:open.spotify.com/user", "Spotify"),
+    "spotify.com": ("spotify", "spotify", "site:open.spotify.com/user", "Spotify"),
+}
+
 # Domains already reported as primary socials -> excluded from the community column.
-PRIMARY_SOCIAL_DOMAINS = ("instagram.com", "tiktok.com", "facebook.com",
-                          "twitter.com", "x.com")
+PRIMARY_SOCIAL_DOMAINS = (
+    "instagram.com", "tiktok.com", "facebook.com", "twitter.com", "x.com",
+    "pinterest.com", "spotify.com",
+)
 
 # Domains whose *name* is itself the community/organisation.
 ORG_DOMAINS = {
@@ -93,7 +117,6 @@ NEWS_DOMAINS = (
 )
 
 # Library catalogues / thesis repositories: almost always a different person
-# with a similar name, or a citation. Never a community.
 ACADEMIC_NOISE = (
     "perpusnas.go.id", "garuda.kemdiktisaintek.go.id", "eprints.", "etd.",
     "repository.", "pustaka.", "opac.", ".sch.id", "digilib.", "lib.",
@@ -186,22 +209,19 @@ def name_tokens(name: str) -> list[str]:
     return [t for t in re.split(r"[^a-z0-9]+", name.lower()) if len(t) >= 3]
 
 
-def match_score(name: str, handle: str, title: str) -> float:
+def match_score(name: str, handle: str, title: str, is_holehe_verified: bool = False) -> float:
     """How strongly a candidate profile matches the target name.
 
-    Frequency is a terrible signal (a generic handle like @tiara outranks the
-    real @ningtyasara), so we score on name evidence instead:
-      2.0  every name token appears in the result title  (strongest)
+    Scoring:
+      2.0  every name token appears in the result title (strongest)
       1.0  every name token appears inside the handle
       +0.3 the full name appears as a contiguous string in the title
+      +0.5 platform confirmed registered via Holehe for this email
     Below 1.0 the candidate is rejected as a probable different person.
     """
     toks = name_tokens(name)
     if not toks:
         return 0.0
-    # Search titles usually embed the handle ("Mars Jaya (@fachrul.reza.73)").
-    # Leaving it in lets the handle satisfy the *title* test too, so a profile
-    # whose real name is "Mars Jaya" scores as a perfect match. Strip it first.
     tl = title.lower().replace(handle.lower(), " ")
     tl = re.sub(re.escape(handle.lower().replace(".", " ")), " ", tl)
     hl = handle.lower()
@@ -217,12 +237,24 @@ def match_score(name: str, handle: str, title: str) -> float:
         longest = max(toks, key=len)
         if len(longest) >= 6 and (longest in tl or longest in hl):
             score += 0.6
+
+    # Bonus confidence if the platform is proven registered for the target email
+    if is_holehe_verified and score >= 1.0:
+        score += 0.5
+
     return score
 
 
 def extract_socials(results: list[tuple[str, str]], name: str = "",
-                    threshold: float = 1.0) -> dict[str, dict]:
+                    threshold: float = 1.0,
+                    verified_platforms: list[str] | None = None) -> dict[str, dict]:
     """platform -> {handle, url, title, score}, choosing the best NAME match."""
+    v_set = set()
+    if verified_platforms:
+        for vp in verified_platforms:
+            k = vp.lower().replace(".com", "").strip()
+            v_set.add(k)
+
     tally: dict[str, dict[str, dict]] = {}
     for url, title in results:
         for platform, pat in SOCIAL_PATTERNS.items():
@@ -238,7 +270,8 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
             if title and not entry["title"]:
                 entry["title"] = title
             if name:
-                entry["score"] = max(entry["score"], match_score(name, handle, title))
+                is_v = platform in v_set
+                entry["score"] = max(entry["score"], match_score(name, handle, title, is_holehe_verified=is_v))
 
     out: dict[str, dict] = {}
     for platform, handles in tally.items():
@@ -247,10 +280,7 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
                             key=lambda kv: (-kv[1]["score"], -kv[1]["count"]))
             handle, data = ranked[0]
             if data["score"] < threshold:
-                continue  # no credible name evidence -> do not report a guess
-            # Several distinct profiles tie at the top (common for ordinary
-            # names): we cannot tell which one is the target, so say so instead
-            # of silently picking whichever the search engine listed first.
+                continue
             tied = [h for h, d in ranked if d["score"] == data["score"]]
             alts = tied[1:]
         else:
@@ -264,33 +294,66 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
             "linkedin": f"https://www.linkedin.com/in/{handle}",
             "youtube": f"https://www.youtube.com/@{handle}",
             "github": f"https://github.com/{handle}",
+            "pinterest": f"https://www.pinterest.com/{handle}",
+            "spotify": f"https://open.spotify.com/user/{handle}",
         }.get(platform, data["url"])
         out[platform] = {"handle": handle, "url": canonical,
                          "title": data["title"], "score": round(data["score"], 2),
-                         "hits": data["count"], "alts": alts}
+                         "hits": data["count"], "alts": alts,
+                         "email_verified": platform in v_set}
     return out
 
 
-# Per-platform search terms. One query per platform beats a combined
-# "instagram tiktok" query: search engines split relevance across the terms and
-# the weaker platform gets crowded out of the top results.
 PLATFORM_TERMS = [
     ("instagram", "instagram"),
     ("tiktok", "tiktok"),
     ("twitter", "twitter"),
     ("facebook", "facebook"),
     ("linkedin", "linkedin"),
+    ("github", "github"),
 ]
 
 
-def social_queries(name: str, platforms: list[str] | None = None) -> list[str]:
-    """Queries used to find the target's profiles, cheapest signal first."""
-    qs = [f'"{name}" site:instagram.com OR site:tiktok.com OR site:twitter.com '
-          f'OR site:x.com OR site:facebook.com OR site:linkedin.com']
-    wanted = platforms or [p for p, _ in PLATFORM_TERMS]
+def targeted_social_queries(name: str, verified_platforms: list[str] | None = None,
+                            all_platforms: list[str] | None = None) -> list[str]:
+    """Generate search queries:
+    1. Base name search
+    2. Prioritized queries for platforms verified in Holehe (e.g. name + IG, name + FB)
+    3. Secondary queries for other major social platforms
+    """
+    qs = []
+    seen = set()
+
+    def add_q(q: str):
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            qs.append(q)
+
+    # 1. Base query with full name
+    add_q(f'"{name}"')
+
+    # 2. Targeted queries based on Holehe email verification results
+    if verified_platforms:
+        for vp in verified_platforms:
+            v_clean = vp.lower().strip()
+            if v_clean in HOLEHE_PLATFORM_MAP:
+                plat_key, query_term, site_filter, _ = HOLEHE_PLATFORM_MAP[v_clean]
+                add_q(f'"{name}" {query_term}')
+                add_q(f'"{name}" {site_filter}')
+            else:
+                # Other services (e.g. behance.net, medium.com)
+                short_name = v_clean.split(".")[0]
+                if short_name and short_name not in ("com", "org", "net"):
+                    add_q(f'"{name}" {short_name}')
+                    add_q(f'"{name}" site:{v_clean}')
+
+    # 3. Standard queries for remaining major platforms
+    wanted = all_platforms or [p for p, _ in PLATFORM_TERMS]
     for plat, term in PLATFORM_TERMS:
         if plat in wanted:
-            qs.append(f'"{name}" {term}')
+            add_q(f'"{name}" {term}')
+
     return qs
 
 
@@ -305,25 +368,16 @@ def community_queries(name: str, handle: str | None) -> list[str]:
 
 
 def _clean_title(title: str) -> str:
-    """Drop the trailing ' - Site Name' / ' | Site Name' suffix search engines add."""
     t = re.sub(r"\s*[\|\-–—]\s*[^|\-–—]{0,40}$", "", title).strip()
     return t or title.strip()
 
 
 def org_phrases(title: str, name: str) -> list[str]:
-    """Pull organisation/programme names out of a result title.
-
-    Search titles carry the real community name ('Greenheart's Global Impact
-    Grant', 'Trace on Earth', 'Agni Project') while the domain only says
-    'greenheart.org'. We look for capitalised multi-word phrases anchored by an
-    organisation keyword, plus any 'X Project'-style construction.
-    """
     out: list[str] = []
     ntoks = set(name_tokens(name))
     text = _clean_title(title)
     text = re.sub(r"[\"'’‘“”]", "", text)
 
-    # Capitalised runs, allowing lowercase joiners (of/for/the/on/and/in).
     joiner = r"(?:of|for|the|on|and|in|de|di|dan|untuk)"
     pattern = re.compile(
         rf"\b([A-Z][\w&']*(?:\s+(?:{joiner}\s+)?[A-Z][\w&']*)+)\b")
@@ -332,20 +386,15 @@ def org_phrases(title: str, name: str) -> list[str]:
         phrase = m.group(1).strip()
         phrase = re.sub(r"^(?:Profil|Profile|Biodata|Melalui|Dari)\s+", "", phrase)
         phrase = re.sub(r"'s$", "", phrase).strip()
-        # NOTE: use removesuffix, not strip("'s") -- strip() is character-based
-        # and would turn "Archives" into "Archive", sneaking past the stopwords.
         words = [w.lower().removesuffix("'s") for w in phrase.split()]
         if len(words) < 2 or len(phrase) < 6:
             continue
-        # skip if it's just the person's own name
         if ntoks and set(words) <= ntoks:
             continue
         if any(w in PHRASE_STOPWORDS for w in words):
-            # allowed only when an org keyword still anchors it
             if not any(w in ORG_KEYWORDS for w in words):
                 continue
         has_kw = any(w in ORG_KEYWORDS for w in words)
-        # 'Trace on Earth' has no keyword but is a clean 3-word proper noun
         clean_proper = len(words) <= 4 and not (ntoks & set(words))
         if has_kw or clean_proper:
             out.append(phrase)
@@ -353,7 +402,6 @@ def org_phrases(title: str, name: str) -> list[str]:
 
 
 def community_from_results(results: list[tuple[str, str]], name: str = "") -> list[str]:
-    """Return human-readable community/organisation names, not bare domains."""
     scored: dict[str, int] = {}
 
     def add(label: str, weight: int) -> None:
@@ -364,7 +412,6 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
             if existing.lower() == label.lower():
                 scored[existing] += weight
                 return
-            # keep the longer of two nested names ("Greenheart" vs "Greenheart International")
             if label.lower() in existing.lower():
                 scored[existing] += weight
                 return
@@ -382,25 +429,19 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
 
         is_news = any(d in low for d in NEWS_DOMAINS)
 
-        # A news article only counts if it is actually about the target;
-        # otherwise we pick up orgs from a same-name stranger's profile piece.
         if is_news and name:
             tl = title.lower()
             if not all(t in tl for t in name_tokens(name)):
                 continue
 
-        # Tag/archive/category listing pages are site furniture, not communities.
         if re.search(r"/(tagged|tag|category|archives?|page)/", low):
             continue
 
-        # 1) known organisation domains -> their proper name
         for dom, label in ORG_DOMAINS.items():
             if dom in low:
                 add(label, 3)
                 break
 
-        # 2) organisation names mentioned in the title (works for news too:
-        #    the article names the org even though the outlet is not one)
         for phrase in org_phrases(title, name):
             add(phrase, 2 if is_news else 3)
 
@@ -485,29 +526,21 @@ def load_rows(path: Path, sheet: str | None):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("input")
-    ap.add_argument("--sheet", default=None)
-    ap.add_argument("--search-cache", default=None)
-    ap.add_argument("--dump-queries", default=None)
-    ap.add_argument("--no-live-search", action="store_true")
-    ap.add_argument("--maigret", action="store_true")
-    ap.add_argument("--skip-holehe", action="store_true")
-    ap.add_argument("--delay", type=float, default=4.0)
-    ap.add_argument("--limit", type=int, default=0)
+    ap = argparse.ArgumentParser(description="Bulk OSINT person lookup from Excel/CSV")
+    ap.add_argument("input", help="Input file (.xlsx or .csv)")
+    ap.add_argument("--sheet", default=None, help="Sheet name for Excel file")
+    ap.add_argument("--search-cache", default=None, help="Path to JSON search cache")
+    ap.add_argument("--dump-queries", default=None, help="Dump missing queries to JSON for batch retrieval")
+    ap.add_argument("--no-live-search", action="store_true", help="Disable live DuckDuckGo/Google search")
+    ap.add_argument("--maigret", action="store_true", help="Run Maigret username search (slower)")
+    ap.add_argument("--skip-holehe", action="store_true", help="Skip email registration check (Holehe)")
+    ap.add_argument("--delay", type=float, default=4.0, help="Delay between search requests in seconds")
+    ap.add_argument("--limit", type=int, default=0, help="Limit number of rows processed")
     ap.add_argument("--platforms", default="",
-                    help="comma list to narrow per-platform queries, e.g. "
-                         "instagram,tiktok (default: all five)")
+                    help="Comma-separated platform filter, e.g. instagram,facebook")
     args = ap.parse_args()
 
     platforms = [p.strip().lower() for p in args.platforms.split(",") if p.strip()] or None
-    if platforms:
-        known = {p for p, _ in PLATFORM_TERMS}
-        unknown = [p for p in platforms if p not in known]
-        if unknown:
-            print(f"Unknown platform(s): {', '.join(unknown)}. "
-                  f"Valid: {', '.join(sorted(known))}", file=sys.stderr)
-            return 1
 
     src = Path(args.input).expanduser()
     if not src.exists():
@@ -533,8 +566,6 @@ def main() -> int:
     wb = Workbook()
     ws = wb.active
     ws.title = "osint_result"
-    # Everything is consolidated into a single Notes column by design --
-    # no per-platform columns.
     out_headers = headers + ([] if "notes" in [h.lower() for h in headers] else ["Notes"])
     ws.append(out_headers)
     for cell in ws[1]:
@@ -547,50 +578,70 @@ def main() -> int:
         email = str(row[idx["email"]]).strip() if "email" in idx else ""
         if not (name or email):
             continue
-        print(f"[{n}/{len(rows)}] {name or email}", flush=True)
+        print(f"\n[{n}/{len(rows)}] Target: {name or email}", flush=True)
 
-        # 1) name search first -- one query per platform
+        # -------------------------------------------------------------
+        # STEP 1: Holehe Email Check FIRST (Identifikasi platform aktif)
+        # -------------------------------------------------------------
+        holehe = {"used": [], "rate": [], "error": []}
+        verified_platforms = []
+        if email and not args.skip_holehe:
+            print(f"  [Step 1] Cek email terdaftar ({email})...", flush=True)
+            holehe = run_holehe(email)
+            verified_platforms = holehe.get("used", [])
+            print(f"           Terdaftar di: {', '.join(verified_platforms) or '-'}", flush=True)
+
+        # -------------------------------------------------------------
+        # STEP 2: Targeted Multi-query Google Search
+        # -------------------------------------------------------------
         agg: list[tuple[str, str]] = []
         socials: dict[str, dict] = {}
         if name:
-            for q in social_queries(name, platforms):
+            queries = targeted_social_queries(name, verified_platforms=verified_platforms, all_platforms=platforms)
+            print(f"  [Step 2] Targeted Google Search ({len(queries)} query)...", flush=True)
+            for q in queries:
+                print(f"           -> Q: {q}", flush=True)
                 agg += eng.search(q)
-            socials = extract_socials(agg, name=name)
+            socials = extract_socials(agg, name=name, verified_platforms=verified_platforms)
 
-        # 2) community activity (its results often ALSO reveal the real handle,
-        #    so they are folded back into the social extraction below)
+        # -------------------------------------------------------------
+        # STEP 3: Community & Affiliation Probe
+        # -------------------------------------------------------------
         main_handle = next((socials[p]["handle"] for p in
-                            ("instagram", "twitter", "tiktok", "linkedin", "github")
+                            ("instagram", "twitter", "tiktok", "linkedin", "github", "facebook")
                             if p in socials), None)
         crs: list[tuple[str, str]] = []
         for q in community_queries(name, main_handle):
             crs += eng.search(q)
         if name:
-            socials = extract_socials(agg + crs, name=name)
+            socials = extract_socials(agg + crs, name=name, verified_platforms=verified_platforms)
+
         if socials:
             summary = ", ".join(
-                "{}=@{}(score {})".format(p, d["handle"], d["score"])
-                for p, d in socials.items())
+                "{}=@{}(skor {}{})".format(
+                    p, d["handle"], d["score"],
+                    ", verified-email" if d.get("email_verified") else ""
+                ) for p, d in socials.items()
+            )
         else:
-            summary = "none"
-        print(f"    socials: {summary}", flush=True)
+            summary = "tidak ditemukan"
+        print(f"  [Hasil Sosmed]: {summary}", flush=True)
 
         communities = community_from_results(crs, name)
-        print(f"    komunitas: {', '.join(communities) if communities else '-'}", flush=True)
+        print(f"  [Komunitas]   : {', '.join(communities) if communities else '-'}", flush=True)
 
-        # 3) holehe
-        holehe = {"used": [], "rate": [], "error": []}
-        if email and not args.skip_holehe:
-            holehe = run_holehe(email)
-        print(f"    holehe[+]: {', '.join(holehe['used']) or '-'}", flush=True)
-
-        # 4) maigret (optional)
+        # -------------------------------------------------------------
+        # STEP 4: Maigret (Opsional)
+        # -------------------------------------------------------------
         maigret_hits: list[tuple[str, str]] = []
         if args.maigret:
+            print("  [Step 4] Running Maigret username search...", flush=True)
             for cand in candidate_usernames(name, email):
                 maigret_hits += run_maigret(cand)
 
-        # ---- compose the single Notes cell (multi-line, human readable)
+        # -------------------------------------------------------------
+        # STEP 5: Compose Notes Multi-baris
+        # -------------------------------------------------------------
         lines: list[str] = []
 
         socmed = []
@@ -598,16 +649,19 @@ def main() -> int:
         for plat, label in (("instagram", "IG"), ("tiktok", "TikTok"),
                             ("twitter", "X"), ("facebook", "FB"),
                             ("linkedin", "LinkedIn"), ("youtube", "YouTube"),
-                            ("github", "GitHub")):
+                            ("github", "GitHub"), ("pinterest", "Pinterest"),
+                            ("spotify", "Spotify")):
             if plat not in socials:
                 continue
             d = socials[plat]
             n_alt = len(d.get("alts", []))
+            verified_tag = " [Terverifikasi Email]" if d.get("email_verified") else ""
             if n_alt:
-                socmed.append(f"{label}: {d['url']} (+{n_alt} kandidat lain)")
+                socmed.append(f"{label}: {d['url']}{verified_tag} (+{n_alt} kandidat lain)")
                 ambiguous.append(label)
             else:
-                socmed.append(f"{label}: {d['url']}")
+                socmed.append(f"{label}: {d['url']}{verified_tag}")
+
         if maigret_hits:
             for site, url in maigret_hits[:6]:
                 socmed.append(f"{site.strip()}: {url}")
@@ -655,14 +709,14 @@ def main() -> int:
 
     dest = src.with_name(src.stem + "_result.xlsx")
     wb.save(dest)
-    print(f"\nSaved: {dest}")
+    print(f"\n✅ Hasil selesai disimpan ke: {dest}")
 
     if eng.missing:
-        print(f"[cache] {len(eng.missing)} queries were not in cache")
+        print(f"[cache] {len(eng.missing)} query belum ada di cache")
         if args.dump_queries:
             Path(args.dump_queries).write_text(
                 json.dumps(eng.missing, ensure_ascii=False, indent=1), encoding="utf-8")
-            print(f"[cache] queries written to {args.dump_queries}")
+            print(f"[cache] Daftar query berhasil ditulis ke {args.dump_queries}")
     return 0
 
 

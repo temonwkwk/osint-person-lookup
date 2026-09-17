@@ -4,14 +4,54 @@ Tools otomatisasi investigasi OSINT (*Open Source Intelligence*) untuk melakukan
 
 ---
 
+## 🔄 Alur Kerja Baru (*Targeted Multi-step Flow*)
+
+Alur kerja dioptimalkan secara bertahap agar lebih akurat dan fokus:
+
+```
+[1. Input Excel/CSV] (Nama, No HP, Email)
+         │
+         ▼
+[2. Step 1: Cek Email Terdaftar (Holehe)]
+├── Cek email ke puluhan platform (Instagram, Facebook, Twitter, Spotify, GitHub, dll)
+└── Simpan daftar platform yang terbukti terdaftar (verified platforms)
+         │
+         ▼
+[3. Step 2: Targeted Multi-Query Google Search]
+├── Pencarian berulang dan terarah:
+│   • Query 1: "{nama}"
+│   • Query 2: "{nama}" instagram & "{nama}" site:instagram.com (jika IG terdaftar)
+│   • Query 3: "{nama}" facebook & "{nama}" site:facebook.com (jika FB terdaftar)
+│   • Query 4..N: "{nama}" {platform} untuk platform terdaftar lainnya
+│   • Query Pelengkap: Pencarian platform umum lainnya
+└── Scoring & Verifikasi:
+    • Nilai bobot kecocokan nama pada handle dan judul profil
+    • Bonus keyakinan (+0.5 skor) jika profil ditemukan pada platform yang terverifikasi Holehe
+         │
+         ▼
+[4. Step 3: Pelacakan Afiliasi Komunitas & Organisasi]
+├── Query berbasis Nama + Handle terkuat
+└── Ekstraksi nama resmi yayasan, organisasi, atau project
+         │
+         ▼
+[5. Step 4: Maigret (Opsional)]
+└── Reverse search username jika flag `--maigret` diaktifkan
+         │
+         ▼
+[6. Output Excel: Kolom 'Notes']
+└── Disimpan ke `<input>_result.xlsx` dengan format multi-baris rapi
+```
+
+---
+
 ## 🚀 Fitur Utama
 
-- **Pencarian Media Sosial Otomatis**: Mendeteksi akun Instagram, TikTok, Twitter/X, Facebook, LinkedIn, YouTube, Threads, dan Pinterest yang memiliki korelasi tinggi dengan nama target.
-- **Ekstraksi Afiliasi Organisasi & Komunitas**: Mengidentifikasi nama organisasi, yayasan, project, kampus, atau komunitas dari judul artikel/profil publik (bukan sekadar domain mentah).
-- **Deteksi Registrasi Akun Email via Holehe**: Memeriksa apakah email target terdaftar di berbagai layanan online (misal: Office365, Spotify, Twitter, GitHub, dll).
-- **Scoring & Verifikasi Cerdas**: Menggunakan algoritma pembobotan kecocokan nama untuk menyaring profil palsu atau homonim.
-- **Output Terstruktur & Rapi**: Menghasilkan file baru `<input>_result.xlsx` tanpa merusak kolom asli, menambahkan satu kolom ringkasan `Notes` multi-baris.
-- **Dua Mode Pencarian**: Mendukung mode *live search* langsung maupun mode *2-pass cached search* untuk menghindari rate-limit mesin pencari.
+- **Pengecekan Email di Awal**: Memanfaatkan Holehe sebelum pencarian web untuk menentukan platform target yang valid.
+- **Pencarian Google Bertarget & Multi-Iterasi**: Membuat variasi query pencarian otomatis berdasarkan bukti platform yang dimiliki target (`nama`, `nama + IG`, `nama + FB`, dst).
+- **Ekstraksi Afiliasi Organisasi & Komunitas**: Mengidentifikasi nama organisasi/program resmi dari judul artikel/profil publik.
+- **Scoring Cerdas & Cross-Verification**: Memberikan tanda `[Terverifikasi Email]` dan skor tinggi jika profil sosmed cocok dengan email yang terbukti terdaftar.
+- **Output Terstruktur**: Menghasilkan file baru `<input>_result.xlsx` tanpa merusak kolom asli.
+- **Dua Mode Pencarian**: Mendukung mode *live search* langsung dan mode *2-pass cache* anti rate-limit.
 
 ---
 
@@ -32,12 +72,12 @@ pip install -r requirements.txt
 
 ## 📋 Format File Input
 
-File input dapat berupa `.xlsx` atau `.csv`. Header kolom akan dideteksi secara otomatis (case-insensitive):
+File input dapat berupa `.xlsx` atau `.csv`. Header kolom akan dideteksi secara otomatis:
 - **Nama**: Kolom `Nama`, `Name`, `Full Name`
 - **Nomor HP**: Kolom `No HP`, `Nomor HP`, `Phone`, `Telepon`, `Handphone`
 - **Email**: Kolom `Email`, `Alamat Email`, `Mail`
 
-Contoh struktur tabel:
+Contoh:
 
 | Nama | No HP | Email | Kota |
 | :--- | :--- | :--- | :--- |
@@ -50,19 +90,13 @@ Contoh struktur tabel:
 
 ### 1. Mode Standar (Live Search)
 
-Menjalankan proses secara langsung untuk seluruh baris:
-
 ```bash
 python bulk_osint.py input.xlsx
 ```
 
-Hasil akan disimpan otomatis ke `input_result.xlsx`.
-
 ---
 
-### 2. Mode 2-Pass Cache (Direkomendasikan untuk Data Besar)
-
-Untuk menghindari blokir atau rate-limit dari mesin pencari saat memproses ratusan data, gunakan pola 2-pass:
+### 2. Mode 2-Pass Cache (Untuk Data Jumlah Besar)
 
 **Langkah 1 — Dump Daftar Query:**
 ```bash
@@ -70,7 +104,7 @@ python bulk_osint.py input.xlsx --search-cache cache.json --dump-queries queries
 ```
 
 **Langkah 2 — Ambil Hasil Search ke `cache.json`:**
-Isi data hasil pencarian ke dalam file `cache.json` menggunakan search engine / API pilihan Anda.
+Isi data hasil pencarian ke dalam file `cache.json`.
 
 **Langkah 3 — Eksekusi Analisis Lengkap:**
 ```bash
@@ -81,44 +115,12 @@ python bulk_osint.py input.xlsx --search-cache cache.json
 
 ## 📊 Format Output (`Notes`)
 
-Hasil analisis disajikan dalam format multi-baris pada kolom `Notes`:
-
 ```text
-Sosmed: IG: https://www.instagram.com/budisantoso/ | LinkedIn: https://www.linkedin.com/in/budisantoso
+Sosmed: IG: https://www.instagram.com/budisantoso/ [Terverifikasi Email] (skor 2.8); FB: https://www.facebook.com/budisantoso [Terverifikasi Email]
 Komunitas: Greenheart International, Yayasan Peduli Negeri
-Email terdaftar di: office365, spotify, twitter
-Catatan: kecocokan lemah, perlu verifikasi manual (jika skor < 2.0)
+Email terdaftar di: instagram, facebook, spotify, office365
+Catatan: kecocokan lemah, perlu verifikasi manual (hanya jika skor < 2.0)
 ```
-
----
-
-## ⚙️ Opsi Command Line
-
-```text
-usage: bulk_osint.py [-h] [--output OUTPUT] [--search-cache SEARCH_CACHE]
-                     [--dump-queries DUMP_QUERIES] [--no-live-search]
-                     [--skip-holehe] [--delay DELAY]
-                     input_file
-
-positional arguments:
-  input_file            File input (.xlsx atau .csv)
-
-options:
-  -h, --help            Tampilkan bantuan
-  --output OUTPUT       Path file output kustom
-  --search-cache PATH   Gunakan cache file JSON untuk hasil search engine
-  --dump-queries PATH   Simpan query pencarian yang dihasilkan ke file JSON
-  --no-live-search      Nonaktifkan live HTTP search ke DuckDuckGo/Google
-  --skip-holehe         Lewati pengecekan email dengan Holehe
-  --delay DELAY         Delay jeda antar request (detik)
-```
-
----
-
-## 🔒 Privasi & Keamanan Data
-
-- Repository ini **tidak menyimpan data pribadi atau hasil investigasi nyata**.
-- Pastikan untuk selalu menambahkan file data sensitif (`target.xlsx`, `cache.json`, `*.log`) ke dalam `.gitignore` sebelum melakukan commit.
 
 ---
 
