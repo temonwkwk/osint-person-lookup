@@ -27,7 +27,7 @@ Two-pass usage with the cache (recommended):
 
 Usage:
   python3 bulk_osint.py INPUT.xlsx [--sheet S] [--search-cache c.json]
-      [--dump-queries q.json] [--no-live-search] [--maigret] [--delay 4] [--limit N]
+      [--dump-queries q.json] [--no-live-search] [--delay 4] [--limit N]
 """
 from __future__ import annotations
 
@@ -597,36 +597,6 @@ def run_holehe(email: str, timeout: int = 200) -> dict[str, list[str]]:
     return {"used": used, "rate": rate, "error": []}
 
 
-def run_maigret(username: str, timeout: int = 300) -> list[tuple[str, str]]:
-    try:
-        proc = subprocess.run(
-            ["maigret", username, "--timeout", "12", "-P", "--no-color",
-             "--no-progressbar", "--no-recursion", "--no-extracting"],
-            capture_output=True, text=True, timeout=timeout)
-    except Exception:  # noqa: BLE001
-        return []
-    return re.findall(r"\[\+\]\s+([^:]+):\s+(https?://\S+)", proc.stdout)[:12]
-
-
-def candidate_usernames(name: str, email: str) -> list[str]:
-    cands = []
-    if email and "@" in email:
-        cands.append(email.split("@")[0].lower())
-    if name:
-        parts = [p for p in re.split(r"\s+", name.strip().lower()) if p]
-        if parts:
-            cands.append("".join(parts))
-            if len(parts) > 1:
-                cands.append(".".join(parts))
-    seen, out = set(), []
-    for c in cands:
-        c = re.sub(r"[^a-z0-9._]", "", c)
-        if c and c not in seen:
-            seen.add(c)
-            out.append(c)
-    return out[:3]
-
-
 # --------------------------------------------------------------------------- io
 
 def normalize_headers(headers: list[str]) -> dict[str, int]:
@@ -663,7 +633,6 @@ def main() -> int:
     ap.add_argument("--search-cache", default=None, help="Path to JSON search cache")
     ap.add_argument("--dump-queries", default=None, help="Dump missing queries to JSON for batch retrieval")
     ap.add_argument("--no-live-search", action="store_true", help="Disable live DuckDuckGo/Google search")
-    ap.add_argument("--maigret", action="store_true", help="Run Maigret username search (slower)")
     ap.add_argument("--skip-holehe", action="store_true", help="Skip email registration check (Holehe)")
     ap.add_argument("--delay", type=float, default=4.0, help="Delay between search requests in seconds")
     ap.add_argument("--limit", type=int, default=0, help="Limit number of rows processed")
@@ -790,16 +759,7 @@ def main() -> int:
         print(f"  [Minat/Komunitas]: {', '.join(communities) if communities else '-'}", flush=True)
 
         # -------------------------------------------------------------
-        # STEP 5: Maigret (Opsional)
-        # -------------------------------------------------------------
-        maigret_hits: list[tuple[str, str]] = []
-        if args.maigret:
-            print("  [Step 5] Running Maigret username search...", flush=True)
-            for cand in candidate_usernames(name, email):
-                maigret_hits += run_maigret(cand)
-
-        # -------------------------------------------------------------
-        # STEP 6: Compose Customer Outreach Notes Format
+        # STEP 5: Compose Customer Outreach Notes Format
         # -------------------------------------------------------------
         lines: list[str] = []
 
