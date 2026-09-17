@@ -137,10 +137,12 @@ ORG_KEYWORDS = {
     "council", "union", "chapter", "collective", "organization", "organisation",
     "volunteers", "volunteer", "volunteering", "corps", "fellowship", "committee",
     "grant", "award", "guild", "league", "circle", "charity", "event", "summit",
+    "backpacker", "backpackers", "touring", "traveler", "riders",
     # Indonesian
     "komunitas", "yayasan", "grup", "forum", "perkumpulan", "paguyuban", "relawan",
     "lembaga", "himpunan", "ikatan", "gerakan", "serikat", "badan", "wadah", "aliansi",
     "kegiatan", "baksos", "peduli", "berbagi", "aksi", "projek", "inisiatif", "pengabdian",
+    "motoran", "bukber", "ngopi", "jalan-jalan", "sahabat",
 }
 
 # Generic title words that must never become a "community" name.
@@ -383,7 +385,7 @@ def community_queries(name: str, socials: dict[str, dict] | None = None) -> list
     kw_filter = (
         "(community OR forum OR group OR komunitas OR grup OR "
         "perkumpulan OR paguyuban OR yayasan OR volunteer OR relawan OR "
-        "highlight OR highlights OR baksos OR charity OR kegiatan OR event)"
+        "highlight OR highlights OR baksos OR charity OR kegiatan OR event OR backpacker OR motoran)"
     )
     if socials:
         for plat, data in socials.items():
@@ -425,18 +427,18 @@ def org_phrases(title: str, name: str) -> list[str]:
     text = re.sub(r"[\"'’‘“”]", "", text)
 
     clean_lead_pat = (
-        r"^(?:Profil|Profile|Biodata|Melalui|Dari|Bersama|Diskusi\s+di|Joined|"
+        r"^(?:Instagram|Facebook|Twitter|TikTok|LinkedIn|YouTube|Profil|Profile|Biodata|Melalui|Dari|Bersama|Diskusi\s+di|Joined|"
         r"Member\s+of|Anggota\s+dari|Gathering\s+bersama|Aktivis\s+di|Follow|"
-        r"Highlights?|Stories|Story|Album|Kegiatan)\s*[:\-–—]?\s*"
+        r"Highlights?|Stories|Story|Album|Kegiatan|Edisi)\s*[:\-–—]?\s*"
     )
 
     joiner = r"(?:of|for|the|on|and|in|de|di|dan|untuk)"
     pattern = re.compile(
         rf"\b([A-Z][\w&']*(?:\s+(?:{joiner}\s+)?[A-Z0-9][\w&']*)+)\b")
 
+    # 1. Capitalized multi-word phrases
     for m in pattern.finditer(text):
         phrase = m.group(1).strip()
-        # Clean leading noise words in Indonesian and English
         phrase = re.sub(clean_lead_pat, "", phrase, flags=re.I).strip()
         phrase = re.sub(r"'s$", "", phrase).strip()
         words = [w.lower().removesuffix("'s") for w in phrase.split()]
@@ -451,6 +453,23 @@ def org_phrases(title: str, name: str) -> list[str]:
         clean_proper = len(words) <= 4 and not (ntoks & set(words))
         if has_kw or clean_proper:
             out.append(phrase)
+
+    # 2. Segment-based extraction for Instagram/social bullet separated highlights (e.g. "Backpacker indonesia · Bukber motoran")
+    segments = re.split(r"[·•\n]", text)
+    for seg in segments:
+        seg_clean = seg.strip()
+        seg_clean = re.sub(clean_lead_pat, "", seg_clean, flags=re.I).strip()
+        words = [w.lower().removesuffix("'s") for w in re.split(r"[^\w]+", seg_clean) if w]
+        if len(words) < 2 or len(seg_clean) < 6 or len(seg_clean) > 45:
+            continue
+        if ntoks and set(words) <= ntoks:
+            continue
+        if any(w in ORG_KEYWORDS for w in words):
+            # Clean emoji/trailing punctuation
+            cleaned_seg = re.sub(r"[^\w\s&'-]+", "", seg_clean).strip()
+            if cleaned_seg and cleaned_seg not in out:
+                out.append(cleaned_seg)
+
     return out
 
 
