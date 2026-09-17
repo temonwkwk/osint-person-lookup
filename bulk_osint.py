@@ -834,17 +834,29 @@ def main() -> int:
         # -------------------------------------------------------------
         # STEP 5: AI Face Matching (Optional, on Local CPU)
         # -------------------------------------------------------------
-        if args.face_match and face_matcher and face_matcher.enabled and baseline_face is not None:
-            for plat, d in socials.items():
-                cand_avatar = d.get("avatar_url")
-                if cand_avatar:
-                    cand_feat = face_matcher.get_face_feature(cand_avatar)
-                    if cand_feat is not None:
-                        pct, is_match = face_matcher.compare_faces(baseline_face, cand_feat)
-                        if is_match:
-                            d["signals"].append(f"Wajah Cocok: {pct}%")
-                        else:
-                            d["signals"].append(f"Wajah Berbeda: {pct}%")
+        if args.face_match and face_matcher and face_matcher.enabled:
+            # Auto-Baseline: If no photo column in input, automatically use discovered LinkedIn/GitHub avatar
+            if baseline_face is None:
+                for priority_plat in ("linkedin", "github", "pinterest"):
+                    if priority_plat in socials and socials[priority_plat].get("avatar_url"):
+                        av_url = socials[priority_plat]["avatar_url"]
+                        print(f"  [Face Match] Ekstraksi wajah baseline otomatis dari {priority_plat.title()}...", flush=True)
+                        baseline_face = face_matcher.get_face_feature(av_url)
+                        if baseline_face is not None:
+                            print(f"               ✅ Wajah baseline berhasil diambil dari {priority_plat.title()}.", flush=True)
+                            break
+
+            if baseline_face is not None:
+                for plat, d in socials.items():
+                    cand_avatar = d.get("avatar_url")
+                    if cand_avatar:
+                        cand_feat = face_matcher.get_face_feature(cand_avatar)
+                        if cand_feat is not None:
+                            pct, is_match = face_matcher.compare_faces(baseline_face, cand_feat)
+                            if is_match:
+                                d["signals"].append(f"Wajah Cocok: {pct}%")
+                            else:
+                                d["signals"].append(f"Wajah Berbeda: {pct}%")
 
         # -------------------------------------------------------------
         # STEP 6: Compose Customer Outreach Notes Format
