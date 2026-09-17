@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Bulk OSINT lookup from XLSX/CSV -> writes <name>_result.xlsx with a Notes column.
+"""Bulk OSINT lookup from XLSX/CSV -> writes <name>_result.xlsx optimized for Customer Outreach (IG/TikTok/FB).
 
 Pipeline Flow:
   1. Email check first (Holehe) -> detects verified registered platforms (IG, FB, Twitter, Spotify, dll).
      - If Name was initially empty: perform reverse username search from email prefix to discover real name.
      - Auto-Feedback Loop: If real name is discovered, auto-feed it into Step 2.
-  2. Targeted multi-step Google search -> prioritize search queries based on platforms proven in Step 1:
-     - General: "{name}"
-     - Targeted: "{name}" instagram, "{name}" site:instagram.com, "{name}" facebook, dst.
-     - Secondary: search other major platforms.
-  3. Community, Forum, Group, Highlight & Activity Probe (Bilingual ID & EN):
+  2. Targeted multi-step Customer Social Search (Priority: Instagram, TikTok, Facebook, Twitter/X):
+     - Priority queries for IG, TikTok, FB, and X/Twitter.
+     - Secondary queries for LinkedIn (as professional validator).
+  3. Handle Cascading:
+     - Cross-check candidate handles across Instagram, TikTok, Facebook, Threads, and Twitter.
+  4. Community, Forum, Group, Highlight & Activity Probe (Bilingual ID & EN):
      - Targeted queries on posts, bio, and highlights of discovered social media accounts:
        site:instagram.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan OR highlight OR highlights OR kegiatan OR baksos OR charity OR volunteer)
        site:facebook.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan)
        site:x.com/{handle} (community OR forum OR group OR komunitas OR grup)
-     - Extraction & cleaning of organization/group/activity names from titles & snippets.
-  4. Maigret on candidate usernames (optional, --maigret).
-  5. Consolidated Notes generation with cross-verification score.
+     - Extraction of interests, groups, and hobbies for personalized outreach ice-breakers.
+  5. Reachability & Contact Signal Extraction:
+     - Extract follower counts, WhatsApp / wa.me links, bio links (linktr.ee, biolinky).
+  6. Consolidated Customer Outreach Notes generation.
 
 Two-pass usage with the cache (recommended):
   pass 1: python3 bulk_osint.py IN.xlsx --search-cache c.json --dump-queries q.json
@@ -48,8 +50,9 @@ UA = (
 SOCIAL_PATTERNS = {
     "instagram": re.compile(r"https?://(?:www\.)?instagram\.com/([A-Za-z0-9_.]+)/?", re.I),
     "tiktok": re.compile(r"https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9_.]+)", re.I),
+    "facebook": re.compile(r"https?://(?:www\.|web\.|m\.)?facebook\.com/([A-Za-z0-9_.\-]+)", re.I),
     "twitter": re.compile(r"https?://(?:www\.)?(?:twitter|x)\.com/([A-Za-z0-9_]+)", re.I),
-    "facebook": re.compile(r"https?://(?:www\.|web\.)?facebook\.com/([A-Za-z0-9_.\-]+)", re.I),
+    "threads": re.compile(r"https?://(?:www\.)?threads\.net/@([A-Za-z0-9_.]+)", re.I),
     "linkedin": re.compile(r"https?://(?:[a-z]{2}\.)?linkedin\.com/in/([A-Za-z0-9\-_%]+)", re.I),
     "youtube": re.compile(r"https?://(?:www\.)?youtube\.com/@([A-Za-z0-9_.\-]+)", re.I),
     "github": re.compile(r"https?://(?:www\.)?github\.com/([A-Za-z0-9\-]+)/?$", re.I),
@@ -89,7 +92,7 @@ HOLEHE_PLATFORM_MAP = {
 # Domains already reported as primary socials -> excluded from bare domain community mapping.
 PRIMARY_SOCIAL_DOMAINS = (
     "instagram.com", "tiktok.com", "facebook.com", "twitter.com", "x.com",
-    "pinterest.com", "spotify.com", "youtube.com", "linkedin.com",
+    "pinterest.com", "spotify.com", "youtube.com", "linkedin.com", "threads.net",
 )
 
 # Domains whose *name* is itself the community/organisation.
@@ -204,7 +207,7 @@ class SearchEngine:
                     url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
                 body = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
                 if "result__a" not in body:
-                    time.sleep(5 + attempt * 5)   # anomaly/rate-limit page
+                    time.sleep(5 + attempt * 5)
                     continue
                 out = []
                 for m in re.finditer(
@@ -261,10 +264,29 @@ def match_score(name: str, handle: str, title: str, is_holehe_verified: bool = F
     return score
 
 
+def extract_reachability_signals(text: str) -> list[str]:
+    """Extract follower count, WhatsApp, and bio link signals for customer outreach."""
+    signals = []
+    # Follower count
+    f_match = re.search(r"([\d.,]+[KkMm]?\+?\s*followers?)", text, re.I)
+    if f_match:
+        signals.append(f_match.group(1).strip())
+    # WhatsApp / Phone
+    wa_match = re.search(r"(?:WA|WhatsApp|Contact|Hubungi|Phone)[\s:]*([+\d\s-]{9,16})", text, re.I)
+    if wa_match:
+        clean_num = re.sub(r"[^\d+]", "", wa_match.group(1).strip())
+        signals.append(f"WA: {clean_num}")
+    # Contact Links (wa.me, linktree, etc.)
+    link_match = re.search(r"((?:https?://)?(?:wa\.me|linktr\.ee|biolinky\.co|campsite\.bio|taplink\.cc)/\S+)", text, re.I)
+    if link_match:
+        signals.append(f"Link: {link_match.group(1).strip().rstrip('.,;')}")
+    return signals
+
+
 def extract_socials(results: list[tuple[str, str]], name: str = "",
                     threshold: float = 1.0,
                     verified_platforms: list[str] | None = None) -> dict[str, dict]:
-    """platform -> {handle, url, title, score}, choosing the best NAME match."""
+    """platform -> {handle, url, title, score, signals}, choosing the best NAME match."""
     v_set = set()
     if verified_platforms:
         for vp in verified_platforms:
@@ -281,10 +303,16 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
             if not handle or handle in RESERVED or handle.startswith("profile.php"):
                 continue
             entry = tally.setdefault(platform, {}).setdefault(
-                handle, {"count": 0, "url": url, "title": title, "score": 0.0})
+                handle, {"count": 0, "url": url, "title": title, "score": 0.0, "signals": []})
             entry["count"] += 1
             if title and not entry["title"]:
                 entry["title"] = title
+            
+            # Extract contact & follower signals
+            sig = extract_reachability_signals(title)
+            if sig:
+                entry["signals"] = list(dict.fromkeys(entry["signals"] + sig))
+
             if name:
                 is_v = platform in v_set
                 entry["score"] = max(entry["score"], match_score(name, handle, title, is_holehe_verified=is_v))
@@ -305,8 +333,9 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
         canonical = {
             "instagram": f"https://www.instagram.com/{handle}/",
             "tiktok": f"https://www.tiktok.com/@{handle}",
-            "twitter": f"https://x.com/{handle}",
             "facebook": f"https://www.facebook.com/{handle}",
+            "twitter": f"https://x.com/{handle}",
+            "threads": f"https://www.threads.net/@{handle}",
             "linkedin": f"https://www.linkedin.com/in/{handle}",
             "youtube": f"https://www.youtube.com/@{handle}",
             "github": f"https://github.com/{handle}",
@@ -316,6 +345,7 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
         out[platform] = {"handle": handle, "url": canonical,
                          "title": data["title"], "score": round(data["score"], 2),
                          "hits": data["count"], "alts": alts,
+                         "signals": data.get("signals", []),
                          "email_verified": platform in v_set}
     return out
 
@@ -338,23 +368,20 @@ def extract_name_from_username_search(results: list[tuple[str, str]], username: 
     return ""
 
 
-PLATFORM_TERMS = [
+# Priority search queries: Customer social channels (IG, TikTok, FB) come FIRST
+OUTREACH_PLATFORM_TERMS = [
     ("instagram", "instagram"),
     ("tiktok", "tiktok"),
-    ("twitter", "twitter"),
     ("facebook", "facebook"),
+    ("twitter", "twitter"),
+    ("threads", "threads"),
     ("linkedin", "linkedin"),
-    ("github", "github"),
 ]
 
 
-def targeted_social_queries(name: str, verified_platforms: list[str] | None = None,
-                            all_platforms: list[str] | None = None) -> list[str]:
-    """Generate search queries:
-    1. Base name search
-    2. Prioritized queries for platforms verified in Holehe (e.g. name + IG, name + FB)
-    3. Secondary queries for other major social platforms
-    """
+def customer_outreach_queries(name: str, verified_platforms: list[str] | None = None,
+                              all_platforms: list[str] | None = None) -> list[str]:
+    """Generate search queries prioritizing Customer Outreach channels (IG, TikTok, FB)."""
     qs = []
     seen = set()
 
@@ -364,10 +391,10 @@ def targeted_social_queries(name: str, verified_platforms: list[str] | None = No
             seen.add(q)
             qs.append(q)
 
-    # 1. Base query with full name
-    add_q(f'"{name}"')
+    # 1. Base consumer social search
+    add_q(f'"{name}" site:instagram.com OR site:tiktok.com OR site:facebook.com')
 
-    # 2. Targeted queries based on Holehe email verification results
+    # 2. Prioritized queries for platforms verified in Holehe
     if verified_platforms:
         for vp in verified_platforms:
             v_clean = vp.lower().strip()
@@ -381,13 +408,26 @@ def targeted_social_queries(name: str, verified_platforms: list[str] | None = No
                     add_q(f'"{name}" {short_name}')
                     add_q(f'"{name}" site:{v_clean}')
 
-    # 3. Standard queries for remaining major platforms
-    wanted = all_platforms or [p for p, _ in PLATFORM_TERMS]
-    for plat, term in PLATFORM_TERMS:
+    # 3. Direct platform search in priority order (IG -> TikTok -> FB -> X -> LinkedIn)
+    wanted = all_platforms or [p for p, _ in OUTREACH_PLATFORM_TERMS]
+    for plat, term in OUTREACH_PLATFORM_TERMS:
         if plat in wanted:
             add_q(f'"{name}" {term}')
 
     return qs
+
+
+def handle_cascading_queries(discovered_handles: list[str]) -> list[str]:
+    """Cross-search discovered handles across consumer platforms (IG, TikTok, FB, Threads)."""
+    qs = []
+    seen = set()
+    for h in discovered_handles:
+        h = h.strip().lower()
+        if not h or len(h) < 3 or h in seen or h in RESERVED:
+            continue
+        seen.add(h)
+        qs.append(f"site:instagram.com/{h} OR site:tiktok.com/@{h} OR site:facebook.com/{h} OR site:threads.net/@{h}")
+    return qs[:4]
 
 
 def community_queries(name: str, socials: dict[str, dict] | None = None) -> list[str]:
@@ -474,7 +514,7 @@ def org_phrases(title: str, name: str) -> list[str]:
         if has_kw or clean_proper:
             out.append(phrase)
 
-    # 2. Segment-based extraction for Instagram/social bullet separated highlights (e.g. "Backpacker indonesia · Bukber motoran")
+    # 2. Segment-based extraction for Instagram/social bullet separated highlights
     segments = re.split(r"[·•\n]", text)
     for seg in segments:
         seg_clean = seg.strip()
@@ -527,14 +567,12 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
         if re.search(r"/(tagged|tag|category|archives?|page)/", low):
             continue
 
-        # 1) known organisation domains -> their proper name (for non-social domains)
         if not is_social:
             for dom, label in ORG_DOMAINS.items():
                 if dom in low:
                     add(label, 3)
                     break
 
-        # 2) organisation/community/highlight names mentioned in the title/post snippet
         for phrase in org_phrases(title, name):
             add(phrase, 2 if (is_news or is_social) else 3)
 
@@ -619,7 +657,7 @@ def load_rows(path: Path, sheet: str | None):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Bulk OSINT person lookup from Excel/CSV")
+    ap = argparse.ArgumentParser(description="Bulk OSINT person lookup optimized for Customer Outreach (IG/TikTok/FB)")
     ap.add_argument("input", help="Input file (.xlsx or .csv)")
     ap.add_argument("--sheet", default=None, help="Sheet name for Excel file")
     ap.add_argument("--search-cache", default=None, help="Path to JSON search cache")
@@ -630,7 +668,7 @@ def main() -> int:
     ap.add_argument("--delay", type=float, default=4.0, help="Delay between search requests in seconds")
     ap.add_argument("--limit", type=int, default=0, help="Limit number of rows processed")
     ap.add_argument("--platforms", default="",
-                    help="Comma-separated platform filter, e.g. instagram,facebook")
+                    help="Comma-separated platform filter, e.g. instagram,tiktok,facebook")
     args = ap.parse_args()
 
     platforms = [p.strip().lower() for p in args.platforms.split(",") if p.strip()] or None
@@ -657,8 +695,8 @@ def main() -> int:
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "osint_result"
+    ws = wb.active or wb.create_sheet()
+    ws.title = "outreach_osint_result"
     out_headers = headers + ([] if "notes" in [h.lower() for h in headers] else ["Notes"])
     ws.append(out_headers)
     for cell in ws[1]:
@@ -671,18 +709,21 @@ def main() -> int:
         email = str(row[idx["email"]]).strip() if "email" in idx else ""
         if not (name or email):
             continue
-        print(f"\n[{n}/{len(rows)}] Target: {name or email}", flush=True)
+        print(f"\n[{n}/{len(rows)}] Target Outreach: {name or email}", flush=True)
 
         # -------------------------------------------------------------
         # STEP 1: Holehe Email Check FIRST (Identifikasi platform aktif)
         # -------------------------------------------------------------
         holehe = {"used": [], "rate": [], "error": []}
         verified_platforms = []
+        discovered_handles = []
         if email and not args.skip_holehe:
             print(f"  [Step 1] Cek email terdaftar ({email})...", flush=True)
             holehe = run_holehe(email)
             verified_platforms = holehe.get("used", [])
             print(f"           Terdaftar di: {', '.join(verified_platforms) or '-'}", flush=True)
+            if "@" in email:
+                discovered_handles.append(email.split("@")[0].lower())
 
         # Auto-Feedback Loop: If name is initially empty, discover real name from email prefix
         if not name and email and "@" in email:
@@ -695,29 +736,42 @@ def main() -> int:
                 print(f"           ✅ Nama teridentifikasi: {name}", flush=True)
 
         # -------------------------------------------------------------
-        # STEP 2: Targeted Multi-query Google Search
+        # STEP 2: Customer Outreach Multi-Query Search (IG, TikTok, FB, X)
         # -------------------------------------------------------------
         agg: list[tuple[str, str]] = []
         socials: dict[str, dict] = {}
         if name:
-            queries = targeted_social_queries(name, verified_platforms=verified_platforms, all_platforms=platforms)
-            print(f"  [Step 2] Targeted Google Search ({len(queries)} query)...", flush=True)
+            queries = customer_outreach_queries(name, verified_platforms=verified_platforms, all_platforms=platforms)
+            print(f"  [Step 2] Customer Social Search ({len(queries)} query)...", flush=True)
             for q in queries:
                 print(f"           -> Q: {q}", flush=True)
                 agg += eng.search(q)
             socials = extract_socials(agg, name=name, verified_platforms=verified_platforms)
 
         # -------------------------------------------------------------
-        # STEP 3: Community, Forum, Group & Highlight Probe (Sosmed Posts/Bio)
+        # STEP 3: Handle Cascading (Cross-search handles across IG/TikTok/FB)
+        # -------------------------------------------------------------
+        current_handles = [d["handle"] for d in socials.values() if d.get("handle")]
+        all_candidate_handles = list(dict.fromkeys(discovered_handles + current_handles))
+        cascade_queries = handle_cascading_queries(all_candidate_handles)
+        if cascade_queries:
+            print(f"  [Step 3] Handle Cascading Search ({len(cascade_queries)} query)...", flush=True)
+            for q in cascade_queries:
+                print(f"           -> Q: {q}", flush=True)
+                agg += eng.search(q)
+            if name:
+                socials = extract_socials(agg, name=name, verified_platforms=verified_platforms)
+
+        # -------------------------------------------------------------
+        # STEP 4: Community, Highlights & Ice Breaker Probe
         # -------------------------------------------------------------
         crs: list[tuple[str, str]] = []
         comm_queries = community_queries(name, socials=socials)
-        print(f"  [Step 3] Pelacakan Komunitas/Grup/Highlight ({len(comm_queries)} query)...", flush=True)
+        print(f"  [Step 4] Pelacakan Minat & Komunitas ({len(comm_queries)} query)...", flush=True)
         for q in comm_queries:
             print(f"           -> Q: {q}", flush=True)
             crs += eng.search(q)
 
-        # Fold results back into social extraction in case community results expose new handles
         if name:
             socials = extract_socials(agg + crs, name=name, verified_platforms=verified_platforms)
 
@@ -733,48 +787,77 @@ def main() -> int:
         print(f"  [Hasil Sosmed]: {summary}", flush=True)
 
         communities = community_from_results(crs, name)
-        print(f"  [Komunitas/Grup/Kegiatan]: {', '.join(communities) if communities else '-'}", flush=True)
+        print(f"  [Minat/Komunitas]: {', '.join(communities) if communities else '-'}", flush=True)
 
         # -------------------------------------------------------------
-        # STEP 4: Maigret (Opsional)
+        # STEP 5: Maigret (Opsional)
         # -------------------------------------------------------------
         maigret_hits: list[tuple[str, str]] = []
         if args.maigret:
-            print("  [Step 4] Running Maigret username search...", flush=True)
+            print("  [Step 5] Running Maigret username search...", flush=True)
             for cand in candidate_usernames(name, email):
                 maigret_hits += run_maigret(cand)
 
         # -------------------------------------------------------------
-        # STEP 5: Compose Notes Multi-baris
+        # STEP 6: Compose Customer Outreach Notes Format
         # -------------------------------------------------------------
         lines: list[str] = []
 
-        socmed = []
+        # 1. Primary Consumer Outreach Socials (IG, TikTok, FB, Threads, X)
+        consumer_socmed = []
+        professional_socmed = []
         ambiguous = []
-        for plat, label in (("instagram", "IG"), ("tiktok", "TikTok"),
-                            ("twitter", "X"), ("facebook", "FB"),
-                            ("linkedin", "LinkedIn"), ("youtube", "YouTube"),
-                            ("github", "GitHub"), ("pinterest", "Pinterest"),
-                            ("spotify", "Spotify")):
-            if plat not in socials:
-                continue
-            d = socials[plat]
-            n_alt = len(d.get("alts", []))
-            verified_tag = " [Terverifikasi Email]" if d.get("email_verified") else ""
-            if n_alt:
-                socmed.append(f"{label}: {d['url']}{verified_tag} (+{n_alt} kandidat lain)")
-                ambiguous.append(label)
-            else:
-                socmed.append(f"{label}: {d['url']}{verified_tag}")
+        contact_signals = []
 
-        if maigret_hits:
-            for site, url in maigret_hits[:6]:
-                socmed.append(f"{site.strip()}: {url}")
-        lines.append("Sosmed: " + ("; ".join(socmed) if socmed else "tidak ditemukan"))
+        for plat in ("instagram", "tiktok", "facebook", "threads", "twitter"):
+            if plat in socials:
+                d = socials[plat]
+                label = {"instagram": "IG", "tiktok": "TikTok", "facebook": "FB", "threads": "Threads", "twitter": "X"}[plat]
+                n_alt = len(d.get("alts", []))
+                verified_tag = " [Terverifikasi Email]" if d.get("email_verified") else ""
+                signals_str = f" ({' | '.join(d['signals'])})" if d.get("signals") else ""
+                
+                if d.get("signals"):
+                    contact_signals.extend(d["signals"])
 
+                if n_alt:
+                    consumer_socmed.append(f"{label}: {d['url']}{signals_str}{verified_tag} (+{n_alt} kandidat)")
+                    ambiguous.append(label)
+                else:
+                    consumer_socmed.append(f"{label}: {d['url']}{signals_str}{verified_tag}")
+
+        for plat in ("linkedin", "youtube", "github", "pinterest", "spotify"):
+            if plat in socials:
+                d = socials[plat]
+                label = {"linkedin": "LinkedIn", "youtube": "YouTube", "github": "GitHub", "pinterest": "Pinterest", "spotify": "Spotify"}[plat]
+                professional_socmed.append(f"{label}: {d['url']}")
+
+        lines.append("Sosmed Utama (Outreach): " + ("; ".join(consumer_socmed) if consumer_socmed else "tidak ditemukan"))
+
+        # 2. Fast DM Channel / Direct Contact Recommendation
+        direct_channels = []
+        if "instagram" in socials:
+            direct_channels.append(f"Instagram DM (@{socials['instagram']['handle']})")
+        if "facebook" in socials:
+            direct_channels.append("Facebook Messenger")
+        if "tiktok" in socials:
+            direct_channels.append(f"TikTok DM (@{socials['tiktok']['handle']})")
+        wa_only = [s for s in contact_signals if "WA:" in s or "wa.me" in s]
+        if wa_only:
+            direct_channels.extend(wa_only)
+
+        if direct_channels:
+            lines.append("Kanal DM / Outreach: " + " | ".join(direct_channels))
+
+        # 3. Professional Background Context
+        if professional_socmed:
+            lines.append("Profil Profesional: " + "; ".join(professional_socmed))
+
+        # 4. Ice Breakers / Communities & Interests
         if communities:
-            lines.append("Komunitas/Kegiatan: " + ", ".join(communities))
+            lines.append("Minat & Komunitas (Ice Breaker): " + ", ".join(communities))
 
+        # 5. Holehe Verified Email
         if email and not args.skip_holehe:
             if holehe["used"]:
                 lines.append("Email terdaftar di: "
