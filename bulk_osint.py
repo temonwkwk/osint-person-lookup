@@ -320,6 +320,11 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
             if sig:
                 entry["signals"] = list(dict.fromkeys(entry["signals"] + sig))
 
+            # Extract image/avatar URL if present in snippet
+            img_m = re.search(r"https?://\S+\.(?:jpg|jpeg|png|webp)\S*", title + " " + url, re.I)
+            if img_m and not entry.get("avatar_url"):
+                entry["avatar_url"] = img_m.group(0).rstrip(".,;)\"'")
+
             if name:
                 is_v = platform in v_set
                 entry["score"] = max(entry["score"], match_score(name, handle, title, is_holehe_verified=is_v))
@@ -353,6 +358,7 @@ def extract_socials(results: list[tuple[str, str]], name: str = "",
                          "title": data["title"], "score": round(data["score"], 2),
                          "hits": data["count"], "alts": alts,
                          "signals": data.get("signals", []),
+                         "avatar_url": data.get("avatar_url"),
                          "email_verified": platform in v_set}
     return out
 
@@ -650,6 +656,8 @@ def normalize_headers(headers: list[str]) -> dict[str, int]:
             idx["phone"] = i
         elif key in ("email", "e-mail", "mail", "alamat email"):
             idx["email"] = i
+        elif key in ("foto", "photo", "avatar", "gambar", "image", "foto profil"):
+            idx["photo"] = i
     return idx
 
 
@@ -675,11 +683,24 @@ def main() -> int:
     ap.add_argument("--dump-queries", default=None, help="Dump missing queries to JSON for batch retrieval")
     ap.add_argument("--no-live-search", action="store_true", help="Disable live DuckDuckGo/Google search")
     ap.add_argument("--skip-holehe", action="store_true", help="Skip email registration check (Holehe)")
+    ap.add_argument("--face-match", action="store_true", help="Enable AI Face Recognition & Matching (100% on local CPU)")
     ap.add_argument("--delay", type=float, default=4.0, help="Delay between search requests in seconds")
     ap.add_argument("--limit", type=int, default=0, help="Limit number of rows processed")
     ap.add_argument("--platforms", default="",
                     help="Comma-separated platform filter, e.g. instagram,tiktok,facebook")
     args = ap.parse_args()
+
+    face_matcher = None
+    if args.face_match:
+        try:
+            from face_matcher import FaceMatcher
+            face_matcher = FaceMatcher()
+            if face_matcher.enabled:
+                print("🤖 [AI Face Recognition] Modul aktif di CPU lokal (OpenCV YuNet + SFace).")
+            else:
+                print("⚠️ [AI Face Recognition] Inisialisasi model gagal, face matching dinonaktifkan.")
+        except Exception as e:
+            print(f"⚠️ [AI Face Recognition] Gagal memuat modul: {e}")
 
     platforms = [p.strip().lower() for p in args.platforms.split(",") if p.strip()] or None
 
@@ -734,6 +755,17 @@ def main() -> int:
             print(f"           Terdaftar di: {', '.join(verified_platforms) or '-'}", flush=True)
             if "@" in email:
                 discovered_handles.append(email.split("@")[0].lower())
+
+        # Baseline Face Feature Extraction (if photo column exists and face-match enabled)
+        baseline_face = None
+        photo_src = str(row[idx["photo"]]).strip() if "photo" in idx else ""
+        if args.face_match and face_matcher and face_matcher.enabled and photo_src:
+            print(f"  [Face Match] Ekstraksi wajah baseline dari {photo_src[:45]}...", flush=True)
+            baseline_face = face_matcher.get_face_feature(photo_src)
+            if baseline_face is not None:
+                print("               ✅ Wajah baseline berhasil diekstrak.", flush=True)
+            else:
+                print("               ⚠️ Wajah tidak terdeteksi pada foto sumber.", flush=True)
 
         # Auto-Feedback Loop: If name is initially empty, discover real name from email prefix
         if not name and email and "@" in email:
@@ -800,7 +832,22 @@ def main() -> int:
         print(f"  [Minat/Komunitas]: {', '.join(communities) if communities else '-'}", flush=True)
 
         # -------------------------------------------------------------
-        # STEP 5: Compose Customer Outreach Notes Format
+        # STEP 5: AI Face Matching (Optional, on Local CPU)
+        # -------------------------------------------------------------
+        if args.face_match and face_matcher and face_matcher.enabled and baseline_face is not None:
+            for plat, d in socials.items():
+                cand_avatar = d.get("avatar_url")
+                if cand_avatar:
+                    cand_feat = face_matcher.get_face_feature(cand_avatar)
+                    if cand_feat is not None:
+                        pct, is_match = face_matcher.compare_faces(baseline_face, cand_feat)
+                        if is_match:
+                            d["signals"].append(f"Wajah Cocok: {pct}%")
+                        else:
+                            d["signals"].append(f"Wajah Berbeda: {pct}%")
+
+        # -------------------------------------------------------------
+        # STEP 6: Compose Customer Outreach Notes Format
         # -------------------------------------------------------------
         lines: list[str] = []
 

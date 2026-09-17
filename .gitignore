@@ -32,6 +32,8 @@ cache.json
 queries.json
 *.cache
 *.log
+.face_cache/
+models/*.onnx
 
 # Environment & Secrets
 .env
