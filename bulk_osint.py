@@ -7,13 +7,12 @@ Pipeline Flow:
      - General: "{name}"
      - Targeted: "{name}" instagram, "{name}" site:instagram.com, "{name}" facebook, dst.
      - Secondary: search other major platforms.
-  3. Community, Forum & Group Probe (Bilingual ID & EN):
-     - Targeted queries on posts/content of discovered social media accounts:
-       site:instagram.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan)
-       site:facebook.com/{handle} (community OR forum OR group OR komunitas OR grup)
+  3. Community, Forum, Group, Highlight & Activity Probe (Bilingual ID & EN):
+     - Targeted queries on posts, bio, and highlights of discovered social media accounts:
+       site:instagram.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan OR highlight OR highlights OR kegiatan OR baksos OR charity OR volunteer)
+       site:facebook.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan)
        site:x.com/{handle} (community OR forum OR group OR komunitas OR grup)
-     - General name queries for community, forum, group, yayasan, foundation, relawan, volunteer.
-     - Extraction & cleaning of organization/group names from titles/snippets.
+     - Extraction & cleaning of organization/group/activity names from titles & snippets.
   4. Maigret on candidate usernames (optional, --maigret).
   5. Consolidated Notes generation with cross-verification score.
 
@@ -129,18 +128,19 @@ ACADEMIC_NOISE = (
     "journal.", "jurnal.", "neliti.com", "leutikaprio.com",
 )
 
-# Bilingual keywords for organisations, communities, groups, and forums
+# Bilingual keywords for organisations, communities, groups, forums, activities, and highlights
 ORG_KEYWORDS = {
     # English
     "project", "international", "foundation", "community", "club", "program",
     "programme", "initiative", "institute", "association", "network", "society",
     "movement", "forum", "group", "center", "centre", "academy", "alliance", "coalition",
     "council", "union", "chapter", "collective", "organization", "organisation",
-    "volunteers", "volunteer", "corps", "fellowship", "committee", "grant", "award",
-    "guild", "league", "circle",
+    "volunteers", "volunteer", "volunteering", "corps", "fellowship", "committee",
+    "grant", "award", "guild", "league", "circle", "charity", "event", "summit",
     # Indonesian
     "komunitas", "yayasan", "grup", "forum", "perkumpulan", "paguyuban", "relawan",
     "lembaga", "himpunan", "ikatan", "gerakan", "serikat", "badan", "wadah", "aliansi",
+    "kegiatan", "baksos", "peduli", "berbagi", "aksi", "projek", "inisiatif", "pengabdian",
 }
 
 # Generic title words that must never become a "community" name.
@@ -151,7 +151,8 @@ PHRASE_STOPWORDS = {
     "profil", "biodata", "the", "and", "with", "from", "for", "her", "his",
     "january", "february", "march", "april", "may", "june", "july", "august",
     "september", "october", "november", "december", "empowering", "those",
-    "lihat", "postingan", "foto", "video", "status", "threads",
+    "lihat", "postingan", "foto", "video", "status", "threads", "highlights", "highlight",
+    "story", "stories",
 }
 
 
@@ -368,7 +369,7 @@ def targeted_social_queries(name: str, verified_platforms: list[str] | None = No
 
 
 def community_queries(name: str, socials: dict[str, dict] | None = None) -> list[str]:
-    """Generate bilingual queries for finding community/forum/group mentions in posts and profiles."""
+    """Generate bilingual queries for finding community/forum/group/highlight mentions."""
     qs = []
     seen = set()
 
@@ -378,10 +379,11 @@ def community_queries(name: str, socials: dict[str, dict] | None = None) -> list
             seen.add(q)
             qs.append(q)
 
-    # 1. Targeted search on discovered social media profiles/posts
+    # 1. Targeted search on discovered social media profiles/posts/highlights
     kw_filter = (
         "(community OR forum OR group OR komunitas OR grup OR "
-        "perkumpulan OR paguyuban OR yayasan OR volunteer OR relawan OR foundation OR club)"
+        "perkumpulan OR paguyuban OR yayasan OR volunteer OR relawan OR "
+        "highlight OR highlights OR baksos OR charity OR kegiatan OR event)"
     )
     if socials:
         for plat, data in socials.items():
@@ -403,10 +405,10 @@ def community_queries(name: str, socials: dict[str, dict] | None = None) -> list
             else:
                 add_q(f'"{handle}" {kw_filter}')
 
-    # 2. General name + community / forum / group keywords (Bilingual: ID & EN)
+    # 2. General name + community / forum / group / activity keywords (Bilingual: ID & EN)
     if name:
         add_q(f'"{name}" (komunitas OR community OR forum OR grup OR group OR yayasan OR foundation OR relawan OR volunteer)')
-        add_q(f'"{name}" (perkumpulan OR paguyuban OR association OR society OR "member of" OR "anggota")')
+        add_q(f'"{name}" (perkumpulan OR paguyuban OR baksos OR charity OR "kegiatan" OR "member of" OR "anggota")')
 
     return qs
 
@@ -422,18 +424,20 @@ def org_phrases(title: str, name: str) -> list[str]:
     text = _clean_title(title)
     text = re.sub(r"[\"'’‘“”]", "", text)
 
+    clean_lead_pat = (
+        r"^(?:Profil|Profile|Biodata|Melalui|Dari|Bersama|Diskusi\s+di|Joined|"
+        r"Member\s+of|Anggota\s+dari|Gathering\s+bersama|Aktivis\s+di|Follow|"
+        r"Highlights?|Stories|Story|Album|Kegiatan)\s*[:\-–—]?\s*"
+    )
+
     joiner = r"(?:of|for|the|on|and|in|de|di|dan|untuk)"
     pattern = re.compile(
-        rf"\b([A-Z][\w&']*(?:\s+(?:{joiner}\s+)?[A-Z][\w&']*)+)\b")
+        rf"\b([A-Z][\w&']*(?:\s+(?:{joiner}\s+)?[A-Z0-9][\w&']*)+)\b")
 
     for m in pattern.finditer(text):
         phrase = m.group(1).strip()
         # Clean leading noise words in Indonesian and English
-        phrase = re.sub(
-            r"^(?:Profil|Profile|Biodata|Melalui|Dari|Bersama|Diskusi\s+di|Joined|"
-            r"Member\s+of|Anggota\s+dari|Gathering\s+bersama|Aktivis\s+di|Follow)\s+",
-            "", phrase, flags=re.I
-        ).strip()
+        phrase = re.sub(clean_lead_pat, "", phrase, flags=re.I).strip()
         phrase = re.sub(r"'s$", "", phrase).strip()
         words = [w.lower().removesuffix("'s") for w in phrase.split()]
         if len(words) < 2 or len(phrase) < 6:
@@ -455,7 +459,7 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
 
     def add(label: str, weight: int) -> None:
         label = label.strip(" -–—|·,:;\"'")
-        if len(label) < 3 or label.lower() in ("instagram", "facebook", "tiktok", "twitter", "linkedin", "youtube", "social media"):
+        if len(label) < 3 or label.lower() in ("instagram", "facebook", "tiktok", "twitter", "linkedin", "youtube", "social media", "highlight", "highlights"):
             return
         for existing in list(scored):
             if existing.lower() == label.lower():
@@ -492,7 +496,7 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
                     add(label, 3)
                     break
 
-        # 2) organisation/community names mentioned in the title/post snippet
+        # 2) organisation/community/highlight names mentioned in the title/post snippet
         for phrase in org_phrases(title, name):
             add(phrase, 2 if (is_news or is_social) else 3)
 
@@ -656,11 +660,11 @@ def main() -> int:
             socials = extract_socials(agg, name=name, verified_platforms=verified_platforms)
 
         # -------------------------------------------------------------
-        # STEP 3: Community, Forum & Group Probe (Sosmed Posts & Web)
+        # STEP 3: Community, Forum, Group & Highlight Probe (Sosmed Posts/Bio)
         # -------------------------------------------------------------
         crs: list[tuple[str, str]] = []
         comm_queries = community_queries(name, socials=socials)
-        print(f"  [Step 3] Pelacakan Komunitas/Forum/Grup ({len(comm_queries)} query)...", flush=True)
+        print(f"  [Step 3] Pelacakan Komunitas/Grup/Highlight ({len(comm_queries)} query)...", flush=True)
         for q in comm_queries:
             print(f"           -> Q: {q}", flush=True)
             crs += eng.search(q)
@@ -681,7 +685,7 @@ def main() -> int:
         print(f"  [Hasil Sosmed]: {summary}", flush=True)
 
         communities = community_from_results(crs, name)
-        print(f"  [Komunitas/Grup]: {', '.join(communities) if communities else '-'}", flush=True)
+        print(f"  [Komunitas/Grup/Kegiatan]: {', '.join(communities) if communities else '-'}", flush=True)
 
         # -------------------------------------------------------------
         # STEP 4: Maigret (Opsional)
@@ -721,7 +725,7 @@ def main() -> int:
         lines.append("Sosmed: " + ("; ".join(socmed) if socmed else "tidak ditemukan"))
 
         if communities:
-            lines.append("Komunitas: " + ", ".join(communities))
+            lines.append("Komunitas/Kegiatan: " + ", ".join(communities))
 
         if email and not args.skip_holehe:
             if holehe["used"]:
