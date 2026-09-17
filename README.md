@@ -1,12 +1,10 @@
 # OSINT Person Lookup (`bulk_osint.py`)
 
-Tools otomatisasi investigasi OSINT (*Open Source Intelligence*) untuk melakukan identifikasi jejak digital personal (akun media sosial, afiliasi organisasi/komunitas, dan akun terdaftar) berdasarkan kombinasi **Nama**, **Nomor HP**, dan/atau **Email** dalam jumlah banyak (*bulk processing* via file Excel/CSV).
+Tools otomatisasi investigasi OSINT (*Open Source Intelligence*) untuk melakukan identifikasi jejak digital personal (akun media sosial, afiliasi organisasi/komunitas/grup/forum, dan akun terdaftar) berdasarkan kombinasi **Nama**, **Nomor HP**, dan/atau **Email** dalam jumlah banyak (*bulk processing* via file Excel/CSV).
 
 ---
 
-## 🔄 Alur Kerja Baru (*Targeted Multi-step Flow*)
-
-Alur kerja dioptimalkan secara bertahap agar lebih akurat dan fokus:
+## 🔄 Alur Kerja Lengkap (*Targeted Multi-step Flow*)
 
 ```
 [1. Input Excel/CSV] (Nama, No HP, Email)
@@ -18,7 +16,7 @@ Alur kerja dioptimalkan secara bertahap agar lebih akurat dan fokus:
          │
          ▼
 [3. Step 2: Targeted Multi-Query Google Search]
-├── Pencarian berulang dan terarah:
+├── Pencarian bertahap berdasarkan platform terdaftar:
 │   • Query 1: "{nama}"
 │   • Query 2: "{nama}" instagram & "{nama}" site:instagram.com (jika IG terdaftar)
 │   • Query 3: "{nama}" facebook & "{nama}" site:facebook.com (jika FB terdaftar)
@@ -26,12 +24,17 @@ Alur kerja dioptimalkan secara bertahap agar lebih akurat dan fokus:
 │   • Query Pelengkap: Pencarian platform umum lainnya
 └── Scoring & Verifikasi:
     • Nilai bobot kecocokan nama pada handle dan judul profil
-    • Bonus keyakinan (+0.5 skor) jika profil ditemukan pada platform yang terverifikasi Holehe
+    • Bonus keyakinan (+0.5 skor) & tag [Terverifikasi Email] jika cocok
          │
          ▼
-[4. Step 3: Pelacakan Afiliasi Komunitas & Organisasi]
-├── Query berbasis Nama + Handle terkuat
-└── Ekstraksi nama resmi yayasan, organisasi, atau project
+[4. Step 3: Pelacakan Komunitas, Forum & Grup (Bilingual ID/EN)]
+├── Pencarian postingan & bio dari akun sosmed yang ditemukan:
+│   • site:instagram.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan OR relawan)
+│   • site:facebook.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan)
+│   • site:x.com/{handle} (community OR forum OR group OR komunitas OR grup)
+│   • site:tiktok.com/@{handle} / site:linkedin.com/in/{handle} / site:github.com/{handle}
+├── Pencarian web umum berbasis nama + kata kunci grup/forum/komunitas/organisasi
+└── Ekstraksi dan pembersihan nama grup/organisasi resmi dari cuplikan postingan
          │
          ▼
 [5. Step 4: Maigret (Opsional)]
@@ -48,7 +51,8 @@ Alur kerja dioptimalkan secara bertahap agar lebih akurat dan fokus:
 
 - **Pengecekan Email di Awal**: Memanfaatkan Holehe sebelum pencarian web untuk menentukan platform target yang valid.
 - **Pencarian Google Bertarget & Multi-Iterasi**: Membuat variasi query pencarian otomatis berdasarkan bukti platform yang dimiliki target (`nama`, `nama + IG`, `nama + FB`, dst).
-- **Ekstraksi Afiliasi Organisasi & Komunitas**: Mengidentifikasi nama organisasi/program resmi dari judul artikel/profil publik.
+- **Pelacakan Postingan & Profil Sosmed Terarah**: Mencari kata kunci komunitas, grup, forum, dan organisasi (bilingual: Indonesia & Inggris) langsung pada postingan/konten akun sosmed yang teridentifikasi.
+- **Ekstraksi Afiliasi Organisasi & Komunitas Cerdas**: Mengidentifikasi nama organisasi, grup, yayasan, forum, atau program resmi dari judul artikel dan postingan publik.
 - **Scoring Cerdas & Cross-Verification**: Memberikan tanda `[Terverifikasi Email]` dan skor tinggi jika profil sosmed cocok dengan email yang terbukti terdaftar.
 - **Output Terstruktur**: Menghasilkan file baru `<input>_result.xlsx` tanpa merusak kolom asli.
 - **Dua Mode Pencarian**: Mendukung mode *live search* langsung dan mode *2-pass cache* anti rate-limit.
@@ -117,7 +121,7 @@ python bulk_osint.py input.xlsx --search-cache cache.json
 
 ```text
 Sosmed: IG: https://www.instagram.com/budisantoso/ [Terverifikasi Email] (skor 2.8); FB: https://www.facebook.com/budisantoso [Terverifikasi Email]
-Komunitas: Greenheart International, Yayasan Peduli Negeri
+Komunitas: Indonesian Cloud Community, DevOps Forum Jakarta, Yayasan Peduli Negeri
 Email terdaftar di: instagram, facebook, spotify, office365
 Catatan: kecocokan lemah, perlu verifikasi manual (hanya jika skor < 2.0)
 ```

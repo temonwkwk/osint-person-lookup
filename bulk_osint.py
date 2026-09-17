@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Bulk OSINT lookup from XLSX/CSV -> writes <name>_result.xlsx with a Notes column.
 
-New Pipeline Flow:
+Pipeline Flow:
   1. Email check first (Holehe) -> detects verified registered platforms (IG, FB, Twitter, Spotify, dll).
   2. Targeted multi-step Google search -> prioritize search queries based on platforms proven in Step 1:
      - General: "{name}"
      - Targeted: "{name}" instagram, "{name}" site:instagram.com, "{name}" facebook, dst.
      - Secondary: search other major platforms.
-  3. Community probe on the strongest handle + name -> where they are active.
+  3. Community, Forum & Group Probe (Bilingual ID & EN):
+     - Targeted queries on posts/content of discovered social media accounts:
+       site:instagram.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan)
+       site:facebook.com/{handle} (community OR forum OR group OR komunitas OR grup)
+       site:x.com/{handle} (community OR forum OR group OR komunitas OR grup)
+     - General name queries for community, forum, group, yayasan, foundation, relawan, volunteer.
+     - Extraction & cleaning of organization/group names from titles/snippets.
   4. Maigret on candidate usernames (optional, --maigret).
   5. Consolidated Notes generation with cross-verification score.
 
@@ -79,10 +85,10 @@ HOLEHE_PLATFORM_MAP = {
     "spotify.com": ("spotify", "spotify", "site:open.spotify.com/user", "Spotify"),
 }
 
-# Domains already reported as primary socials -> excluded from the community column.
+# Domains already reported as primary socials -> excluded from bare domain community mapping.
 PRIMARY_SOCIAL_DOMAINS = (
     "instagram.com", "tiktok.com", "facebook.com", "twitter.com", "x.com",
-    "pinterest.com", "spotify.com",
+    "pinterest.com", "spotify.com", "youtube.com", "linkedin.com",
 )
 
 # Domains whose *name* is itself the community/organisation.
@@ -123,14 +129,18 @@ ACADEMIC_NOISE = (
     "journal.", "jurnal.", "neliti.com", "leutikaprio.com",
 )
 
-# Words that signal a candidate phrase is an organisation / programme.
+# Bilingual keywords for organisations, communities, groups, and forums
 ORG_KEYWORDS = {
+    # English
     "project", "international", "foundation", "community", "club", "program",
     "programme", "initiative", "institute", "association", "network", "society",
-    "movement", "forum", "center", "centre", "academy", "alliance", "coalition",
+    "movement", "forum", "group", "center", "centre", "academy", "alliance", "coalition",
     "council", "union", "chapter", "collective", "organization", "organisation",
-    "volunteers", "corps", "fellowship", "committee", "komunitas", "yayasan",
-    "perkumpulan", "paguyuban", "relawan", "lembaga", "grant", "award",
+    "volunteers", "volunteer", "corps", "fellowship", "committee", "grant", "award",
+    "guild", "league", "circle",
+    # Indonesian
+    "komunitas", "yayasan", "grup", "forum", "perkumpulan", "paguyuban", "relawan",
+    "lembaga", "himpunan", "ikatan", "gerakan", "serikat", "badan", "wadah", "aliansi",
 }
 
 # Generic title words that must never become a "community" name.
@@ -141,6 +151,7 @@ PHRASE_STOPWORDS = {
     "profil", "biodata", "the", "and", "with", "from", "for", "her", "his",
     "january", "february", "march", "april", "may", "june", "july", "august",
     "september", "october", "november", "december", "empowering", "those",
+    "lihat", "postingan", "foto", "video", "status", "threads",
 }
 
 
@@ -342,7 +353,6 @@ def targeted_social_queries(name: str, verified_platforms: list[str] | None = No
                 add_q(f'"{name}" {query_term}')
                 add_q(f'"{name}" {site_filter}')
             else:
-                # Other services (e.g. behance.net, medium.com)
                 short_name = v_clean.split(".")[0]
                 if short_name and short_name not in ("com", "org", "net"):
                     add_q(f'"{name}" {short_name}')
@@ -357,13 +367,47 @@ def targeted_social_queries(name: str, verified_platforms: list[str] | None = No
     return qs
 
 
-def community_queries(name: str, handle: str | None) -> list[str]:
+def community_queries(name: str, socials: dict[str, dict] | None = None) -> list[str]:
+    """Generate bilingual queries for finding community/forum/group mentions in posts and profiles."""
     qs = []
-    if handle:
-        qs.append(f'"{handle}"')
+    seen = set()
+
+    def add_q(q: str):
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            qs.append(q)
+
+    # 1. Targeted search on discovered social media profiles/posts
+    kw_filter = (
+        "(community OR forum OR group OR komunitas OR grup OR "
+        "perkumpulan OR paguyuban OR yayasan OR volunteer OR relawan OR foundation OR club)"
+    )
+    if socials:
+        for plat, data in socials.items():
+            handle = data.get("handle")
+            if not handle:
+                continue
+            if plat == "instagram":
+                add_q(f"site:instagram.com/{handle} {kw_filter}")
+            elif plat == "facebook":
+                add_q(f"site:facebook.com/{handle} {kw_filter}")
+            elif plat == "twitter":
+                add_q(f"site:x.com/{handle} OR site:twitter.com/{handle} {kw_filter}")
+            elif plat == "tiktok":
+                add_q(f"site:tiktok.com/@{handle} {kw_filter}")
+            elif plat == "linkedin":
+                add_q(f"site:linkedin.com/in/{handle} {kw_filter}")
+            elif plat == "github":
+                add_q(f"site:github.com/{handle} {kw_filter}")
+            else:
+                add_q(f'"{handle}" {kw_filter}')
+
+    # 2. General name + community / forum / group keywords (Bilingual: ID & EN)
     if name:
-        qs.append(f'"{name}" (komunitas OR community OR forum OR volunteer OR speaker '
-                  f'OR organisasi OR program)')
+        add_q(f'"{name}" (komunitas OR community OR forum OR grup OR group OR yayasan OR foundation OR relawan OR volunteer)')
+        add_q(f'"{name}" (perkumpulan OR paguyuban OR association OR society OR "member of" OR "anggota")')
+
     return qs
 
 
@@ -384,7 +428,12 @@ def org_phrases(title: str, name: str) -> list[str]:
 
     for m in pattern.finditer(text):
         phrase = m.group(1).strip()
-        phrase = re.sub(r"^(?:Profil|Profile|Biodata|Melalui|Dari)\s+", "", phrase)
+        # Clean leading noise words in Indonesian and English
+        phrase = re.sub(
+            r"^(?:Profil|Profile|Biodata|Melalui|Dari|Bersama|Diskusi\s+di|Joined|"
+            r"Member\s+of|Anggota\s+dari|Gathering\s+bersama|Aktivis\s+di|Follow)\s+",
+            "", phrase, flags=re.I
+        ).strip()
         phrase = re.sub(r"'s$", "", phrase).strip()
         words = [w.lower().removesuffix("'s") for w in phrase.split()]
         if len(words) < 2 or len(phrase) < 6:
@@ -405,8 +454,8 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
     scored: dict[str, int] = {}
 
     def add(label: str, weight: int) -> None:
-        label = label.strip(" -–—|·,")
-        if len(label) < 3:
+        label = label.strip(" -–—|·,:;\"'")
+        if len(label) < 3 or label.lower() in ("instagram", "facebook", "tiktok", "twitter", "linkedin", "youtube", "social media"):
             return
         for existing in list(scored):
             if existing.lower() == label.lower():
@@ -422,12 +471,11 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
 
     for url, title in results:
         low = url.lower()
-        if any(d in low for d in PRIMARY_SOCIAL_DOMAINS):
-            continue
         if any(d in low for d in ACADEMIC_NOISE):
             continue
 
         is_news = any(d in low for d in NEWS_DOMAINS)
+        is_social = any(d in low for d in PRIMARY_SOCIAL_DOMAINS)
 
         if is_news and name:
             tl = title.lower()
@@ -437,13 +485,16 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
         if re.search(r"/(tagged|tag|category|archives?|page)/", low):
             continue
 
-        for dom, label in ORG_DOMAINS.items():
-            if dom in low:
-                add(label, 3)
-                break
+        # 1) known organisation domains -> their proper name (for non-social domains)
+        if not is_social:
+            for dom, label in ORG_DOMAINS.items():
+                if dom in low:
+                    add(label, 3)
+                    break
 
+        # 2) organisation/community names mentioned in the title/post snippet
         for phrase in org_phrases(title, name):
-            add(phrase, 2 if is_news else 3)
+            add(phrase, 2 if (is_news or is_social) else 3)
 
     ranked = sorted(scored.items(), key=lambda kv: -kv[1])
     return [label for label, _ in ranked[:6]]
@@ -605,14 +656,16 @@ def main() -> int:
             socials = extract_socials(agg, name=name, verified_platforms=verified_platforms)
 
         # -------------------------------------------------------------
-        # STEP 3: Community & Affiliation Probe
+        # STEP 3: Community, Forum & Group Probe (Sosmed Posts & Web)
         # -------------------------------------------------------------
-        main_handle = next((socials[p]["handle"] for p in
-                            ("instagram", "twitter", "tiktok", "linkedin", "github", "facebook")
-                            if p in socials), None)
         crs: list[tuple[str, str]] = []
-        for q in community_queries(name, main_handle):
+        comm_queries = community_queries(name, socials=socials)
+        print(f"  [Step 3] Pelacakan Komunitas/Forum/Grup ({len(comm_queries)} query)...", flush=True)
+        for q in comm_queries:
+            print(f"           -> Q: {q}", flush=True)
             crs += eng.search(q)
+
+        # Fold results back into social extraction in case community results expose new handles
         if name:
             socials = extract_socials(agg + crs, name=name, verified_platforms=verified_platforms)
 
@@ -628,7 +681,7 @@ def main() -> int:
         print(f"  [Hasil Sosmed]: {summary}", flush=True)
 
         communities = community_from_results(crs, name)
-        print(f"  [Komunitas]   : {', '.join(communities) if communities else '-'}", flush=True)
+        print(f"  [Komunitas/Grup]: {', '.join(communities) if communities else '-'}", flush=True)
 
         # -------------------------------------------------------------
         # STEP 4: Maigret (Opsional)
