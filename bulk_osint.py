@@ -629,19 +629,79 @@ def community_from_results(results: list[tuple[str, str]], name: str = "") -> li
 
 # --------------------------------------------------------------------------- tools
 
-def run_holehe(email: str, timeout: int = 200) -> dict[str, list[str]]:
+SOCIAL_HOLEHE_MODULES = [
+    "holehe.modules.social_media.twitter",
+    "holehe.modules.social_media.instagram",
+    "holehe.modules.social_media.discord",
+    "holehe.modules.social_media.snapchat",
+    "holehe.modules.social_media.pinterest",
+    "holehe.modules.social_media.strava",
+    "holehe.modules.social_media.tumblr",
+    "holehe.modules.social_media.vsco",
+    "holehe.modules.social_media.patreon",
+    "holehe.modules.social_media.bitmoji",
+    "holehe.modules.social_media.imgur",
+    "holehe.modules.social_media.tellonym",
+    "holehe.modules.social_media.wattpad",
+    "holehe.modules.music.spotify",
+    "holehe.modules.programing.github",
+]
+
+_LOADED_SOCIAL_MODULES = []
+
+
+def get_social_modules():
+    global _LOADED_SOCIAL_MODULES
+    if not _LOADED_SOCIAL_MODULES:
+        import importlib
+        for mod_name in SOCIAL_HOLEHE_MODULES:
+            try:
+                _LOADED_SOCIAL_MODULES.append(importlib.import_module(mod_name))
+            except Exception:
+                pass
+    return _LOADED_SOCIAL_MODULES
+
+
+def run_holehe(email: str, timeout: int = 15) -> dict[str, list[str]]:
+    """Fast social-media & creator focused email verification (100% async, ~1-2s)."""
     try:
-        proc = subprocess.run(["holehe", email], capture_output=True, text=True, timeout=timeout)
-    except Exception as e:  # noqa: BLE001
-        return {"used": [], "rate": [], "error": [f"{type(e).__name__}: {e}"]}
-    used, rate = [], []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("[+]") and "." in line:
-            used.append(line[3:].strip())
-        elif line.startswith("[x]") and "." in line:
-            rate.append(line[3:].strip())
-    return {"used": used, "rate": rate, "error": []}
+        import trio
+        import httpx
+    except ImportError:
+        try:
+            proc = subprocess.run(["holehe", email], capture_output=True, text=True, timeout=timeout)
+            used = [line[3:].strip() for line in proc.stdout.splitlines() if line.strip().startswith("[+]")]
+            return {"used": used, "rate": [], "error": []}
+        except Exception as e:
+            return {"used": [], "rate": [], "error": [f"{type(e).__name__}: {e}"]}
+
+    modules = get_social_modules()
+    used_platforms = []
+
+    async def _check():
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            async def probe(mod):
+                try:
+                    fn_name = mod.__name__.split(".")[-1]
+                    fn = getattr(mod, fn_name)
+                    res = []
+                    await fn(email, client, res)
+                    for item in res:
+                        if item.get("exists"):
+                            used_platforms.append(item.get("name", fn_name))
+                except Exception:
+                    pass
+
+            async with trio.open_nursery() as nursery:
+                for mod in modules:
+                    nursery.start_soon(probe, mod)
+
+    try:
+        trio.run(_check)
+    except Exception as e:
+        return {"used": [], "rate": [], "error": [str(e)]}
+
+    return {"used": sorted(list(set(used_platforms))), "rate": [], "error": []}
 
 
 # --------------------------------------------------------------------------- io
