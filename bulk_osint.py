@@ -639,12 +639,6 @@ SOCIAL_HOLEHE_MODULES = [
     "holehe.modules.social_media.tumblr",
     "holehe.modules.social_media.vsco",
     "holehe.modules.social_media.patreon",
-    "holehe.modules.social_media.bitmoji",
-    "holehe.modules.social_media.imgur",
-    "holehe.modules.social_media.tellonym",
-    "holehe.modules.social_media.wattpad",
-    "holehe.modules.music.spotify",
-    "holehe.modules.programing.github",
 ]
 
 _LOADED_SOCIAL_MODULES = []
