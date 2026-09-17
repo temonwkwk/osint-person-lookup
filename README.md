@@ -1,65 +1,78 @@
 # OSINT Person Lookup (`bulk_osint.py`)
 
-Tools otomatisasi investigasi OSINT (*Open Source Intelligence*) untuk melakukan identifikasi jejak digital personal (akun media sosial, afiliasi organisasi/komunitas/grup/forum, dan akun terdaftar) berdasarkan kombinasi **Nama**, **Nomor HP**, dan/atau **Email** dalam jumlah banyak (*bulk processing* via file Excel/CSV).
+Tools otomatisasi investigasi OSINT (*Open Source Intelligence*) yang **dioptimalkan khusus untuk Customer Outreach / Akuisisi Nasabah** (Instagram, TikTok, Facebook, WhatsApp/DM) berdasarkan kombinasi **Nama**, **Nomor HP**, dan/atau **Email** dalam jumlah banyak (*bulk processing* via file Excel/CSV).
 
 ---
 
-## 🔄 Alur Kerja Lengkap (*Targeted Multi-step Flow*)
+## 🎯 Fokus: Customer Acquisition & Direct Outreach
+
+Pipeline ini dirancang untuk menemukan kanal tercepat dalam menghubungi calon customer/nasabah secara personal:
+
+1. **Prioritas Media Sosial Konsumen (IG, TikTok, FB, Threads)**:
+   - Menempatkan Instagram, TikTok, dan Facebook di urutan teratas pencarian.
+   - LinkedIn tetap diposisikan sebagai validator latar belakang profesional nasabah.
+2. **Handle Cascading (Pencocokan Silang Username)**:
+   - Jika satu username/handle teridentifikasi (dari email atau IG), script otomatis menyisir akun yang sama di TikTok, Facebook, dan Threads.
+3. **Ekstraksi Sinyal Kontak Langsung**:
+   - Mendeteksi jumlah pengikut (*followers*), nomor WhatsApp, tautan kontak (`wa.me`, `linktr.ee`, `biolinky`), dan bio.
+4. **Topik Pembuka Obrolan (*Ice Breakers*)**:
+   - Menarik kegiatan, komunitas, atau hobi dari highlight dan postingan publik untuk memudahkan tim sales/outreach membuka percakapan.
+
+---
+
+## 🔄 Alur Kerja Pipeline
 
 ```
-[1. Input Excel/CSV] (Nama, No HP, Email)
+[1. Input Data] (Nama, No HP, Email)
          │
          ▼
-[2. Step 1: Cek Email Terdaftar (Holehe)]
-├── Cek email ke puluhan platform (Instagram, Facebook, Twitter, Spotify, GitHub, dll)
-└── Simpan daftar platform yang terbukti terdaftar (verified platforms)
+[2. Step 1: Cek Email Terdaftar (Holehe) & Reverse Lookup]
+├── Cek email ke puluhan platform (Instagram, Facebook, Spotify, Twitter, dll)
+└── Auto-Feedback Loop: Jika nama awal kosong, ekstrak nama dari prefix email/username
          │
          ▼
-[3. Step 2: Targeted Multi-Query Google Search]
-├── Pencarian bertahap berdasarkan platform terdaftar:
-│   • Query 1: "{nama}"
-│   • Query 2: "{nama}" instagram & "{nama}" site:instagram.com (jika IG terdaftar)
-│   • Query 3: "{nama}" facebook & "{nama}" site:facebook.com (jika FB terdaftar)
-│   • Query 4..N: "{nama}" {platform} untuk platform terdaftar lainnya
-│   • Query Pelengkap: Pencarian platform umum lainnya
-└── Scoring & Verifikasi:
-    • Nilai bobot kecocokan nama pada handle dan judul profil
-    • Bonus keyakinan (+0.5 skor) & tag [Terverifikasi Email] jika cocok
+[3. Step 2: Customer Outreach Multi-Query Search]
+├── Prioritas 1: site:instagram.com "{nama}" & "{nama}" instagram
+├── Prioritas 2: site:tiktok.com "{nama}" & "{nama}" tiktok
+├── Prioritas 3: site:facebook.com "{nama}" & "{nama}" facebook
+├── Prioritas 4: site:threads.net / site:x.com
+└── Validator: site:linkedin.com (Latar Belakang Karir)
          │
          ▼
-[4. Step 3: Pelacakan Komunitas, Forum & Grup (Bilingual ID/EN)]
-├── Pencarian postingan & bio dari akun sosmed yang ditemukan:
-│   • site:instagram.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan OR relawan)
-│   • site:facebook.com/{handle} (community OR forum OR group OR komunitas OR grup OR yayasan)
-│   • site:x.com/{handle} (community OR forum OR group OR komunitas OR grup)
-│   • site:tiktok.com/@{handle} / site:linkedin.com/in/{handle} / site:github.com/{handle}
-├── Pencarian web umum berbasis nama + kata kunci grup/forum/komunitas/organisasi
-└── Ekstraksi dan pembersihan nama grup/organisasi resmi dari cuplikan postingan
+[4. Step 3: Handle Cascading]
+└── Sisir username kandidat lintas platform (IG ↔ TikTok ↔ FB)
          │
          ▼
-[5. Step 4: Maigret (Opsional)]
-└── Reverse search username jika flag `--maigret` diaktifkan
+[5. Step 4: Minat, Komunitas & Ice Breaker Probe]
+└── Ekstraksi kegiatan, komunitas, baksos, atau hobi dari postingan publik
          │
          ▼
-[6. Output Excel: Kolom 'Notes']
-└── Disimpan ke `<input>_result.xlsx` dengan format multi-baris rapi
+[6. Step 5: Ekstraksi Sinyal Kontak & Reachability]
+└── Ekstraksi WhatsApp, Link Bio, Jumlah Followers, dan Status Akun
+         │
+         ▼
+[7. Output Excel: Format Khusus Outreach]
+└── Disimpan ke `<input>_result.xlsx`
 ```
 
 ---
 
-## 🚀 Fitur Utama
+## 📊 Format Output Kolom `Notes` (Outreach Ready)
 
-- **Pengecekan Email di Awal**: Memanfaatkan Holehe sebelum pencarian web untuk menentukan platform target yang valid.
-- **Pencarian Google Bertarget & Multi-Iterasi**: Membuat variasi query pencarian otomatis berdasarkan bukti platform yang dimiliki target (`nama`, `nama + IG`, `nama + FB`, dst).
-- **Pelacakan Postingan & Profil Sosmed Terarah**: Mencari kata kunci komunitas, grup, forum, dan organisasi (bilingual: Indonesia & Inggris) langsung pada postingan/konten akun sosmed yang teridentifikasi.
-- **Ekstraksi Afiliasi Organisasi & Komunitas Cerdas**: Mengidentifikasi nama organisasi, grup, yayasan, forum, atau program resmi dari judul artikel dan postingan publik.
-- **Scoring Cerdas & Cross-Verification**: Memberikan tanda `[Terverifikasi Email]` dan skor tinggi jika profil sosmed cocok dengan email yang terbukti terdaftar.
-- **Output Terstruktur**: Menghasilkan file baru `<input>_result.xlsx` tanpa merusak kolom asli.
-- **Dua Mode Pencarian**: Mendukung mode *live search* langsung dan mode *2-pass cache* anti rate-limit.
+Hasil di kolom `Notes` tersusun rapi untuk kebutuhan tim sales/marketing:
+
+```text
+Sosmed Utama (Outreach): IG: https://www.instagram.com/cho2late/ (6,645 followers | Link: linktr.ee/handoko) [Terverifikasi Email]; FB: https://www.facebook.com/handoko.wibowo
+Kanal DM / Outreach: Instagram DM (@cho2late) | WhatsApp: 08123456789
+Profil Profesional: LinkedIn: https://www.linkedin.com/in/handoko-p-wibowo-3b508443
+Minat & Komunitas (Ice Breaker): Weekend Adventure Enthusiast, GVM Networks, Scooter Prix
+Email terdaftar di: office365, spotify, twitter
+Catatan: kecocokan nama 100% valid
+```
 
 ---
 
-## 📦 Instalasi
+## 📦 Instalasi & Cara Pakai
 
 Pastikan menggunakan Python 3.10+ (disarankan Python 3.12).
 
@@ -72,58 +85,20 @@ cd osint-person-lookup
 pip install -r requirements.txt
 ```
 
----
-
-## 📋 Format File Input
-
-File input dapat berupa `.xlsx` atau `.csv`. Header kolom akan dideteksi secara otomatis:
-- **Nama**: Kolom `Nama`, `Name`, `Full Name`
-- **Nomor HP**: Kolom `No HP`, `Nomor HP`, `Phone`, `Telepon`, `Handphone`
-- **Email**: Kolom `Email`, `Alamat Email`, `Mail`
-
-Contoh:
-
-| Nama | No HP | Email | Kota |
-| :--- | :--- | :--- | :--- |
-| Budi Santoso | 081234567890 | budi.santoso99@gmail.com | Jakarta |
-| Siti Rahmawati | 085712345678 | siti.rahma@yahoo.com | Surabaya |
-
----
-
-## 🛠️ Cara Penggunaan
-
 ### 1. Mode Standar (Live Search)
-
 ```bash
 python bulk_osint.py input.xlsx
 ```
 
----
-
-### 2. Mode 2-Pass Cache (Untuk Data Jumlah Besar)
-
-**Langkah 1 — Dump Daftar Query:**
+### 2. Mode 2-Pass Cache (Untuk Data Besar / Anti Rate-Limit)
 ```bash
+# Step 1: Dump queries
 python bulk_osint.py input.xlsx --search-cache cache.json --dump-queries queries.json --no-live-search --skip-holehe
-```
 
-**Langkah 2 — Ambil Hasil Search ke `cache.json`:**
-Isi data hasil pencarian ke dalam file `cache.json`.
+# Step 2: Ambil hasil search ke cache.json
 
-**Langkah 3 — Eksekusi Analisis Lengkap:**
-```bash
+# Step 3: Eksekusi analisis penuh dari cache
 python bulk_osint.py input.xlsx --search-cache cache.json
-```
-
----
-
-## 📊 Format Output (`Notes`)
-
-```text
-Sosmed: IG: https://www.instagram.com/budisantoso/ [Terverifikasi Email] (skor 2.8); FB: https://www.facebook.com/budisantoso [Terverifikasi Email]
-Komunitas: Indonesian Cloud Community, DevOps Forum Jakarta, Yayasan Peduli Negeri
-Email terdaftar di: instagram, facebook, spotify, office365
-Catatan: kecocokan lemah, perlu verifikasi manual (hanya jika skor < 2.0)
 ```
 
 ---
