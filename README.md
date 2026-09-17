@@ -1,78 +1,103 @@
-# OSINT Person & Community Intelligence Suite
+# OSINT Person Lookup & Customer Outreach (`bulk_osint.py`)
 
-Toolkit otomatisasi investigasi OSINT (*Open Source Intelligence*) berbasis Python yang dioptimalkan untuk:
-1. **`bulk_osint.py`**: **Customer Outreach & Profiling Personal** (Cari Sosmed, Kontak DM/WA, & AI Face Matching).
-2. **`community_osint.py`**: **Community Intelligence & Multi-Community Mapping** (Cari Sosmed Komunitas, Wilayah/Daerah, Komunitas Lain yang Dikelola PIC, & Komunitas Sejenis).
+Toolkit otomatisasi investigasi OSINT (*Open Source Intelligence*) berbasis Python yang **dioptimalkan khusus untuk Customer Outreach & Profiling Personal** (Instagram, TikTok, Facebook, WhatsApp/DM) dengan dukungan **AI Face Matching (100% Local CPU)** berdasarkan data Nama, Nomor HP, Email, dan/atau Foto via file Excel/CSV.
 
 ---
 
-## 🏢 1. Community Intelligence (`community_osint.py`)
+## 🎯 Fitur & Alur Utama (Outreach-Focused)
 
-Dirancang khusus untuk membedah ekosistem komunitas, jangkauan wilayah, dan keterlibatan PIC di organisasi lain.
+1. **Email Pre-check (Holehe) & Reverse Name Discovery**:
+   - Memeriksa platform aktif (Twitter, Spotify, Office365, dll).
+   - Auto-Feedback Loop: Jika nama awal kosong, otomatis mendeteksi nama asli dari prefix email.
+2. **Prioritas Media Sosial Konsumen (IG, TikTok, FB, Threads)**:
+   - Pencarian bertarget menyasar Instagram, TikTok, Facebook, dan Threads.
+   - Sub-name combinations otomatis untuk nama 3+ kata.
+   - LinkedIn diposisikan sebagai validator latar belakang profesional.
+3. **Handle Cascading**:
+   - Sisir username kandidat lintas platform (IG ↔ TikTok ↔ FB).
+4. **AI Face Recognition & Matching (Opsional via `--face-match`)**:
+   - Menggunakan **OpenCV YuNet (Detection) + SFace (Recognition)** berbasis ONNX.
+   - Berjalan **100% di CPU lokal** tanpa GPU dan tanpa API luar.
+   - Menghitung kemiripan biometrik wajah antara foto LinkedIn/KTP dengan avatar sosmed target.
+   - Dilengkapi sistem cache embedding wajah di `.face_cache/` agar tidak ada komputasi berulang.
+5. **Ekstraksi Sinyal Kontak & Reachability**:
+   - Mendeteksi jumlah followers, nomor WhatsApp, tautan kontak (`wa.me`, `linktr.ee`, `biolinky`), dan bio.
+6. **Topik Pembuka Obrolan (*Ice Breakers*)**:
+   - Menarik kegiatan, komunitas, atau hobi dari highlight dan postingan publik.
 
-### 📋 Format Input Excel / CSV:
-Kolom header otomatis terdeteksi (case-insensitive):
-- **Nama Komunitas**: `Nama Komunitas`, `Komunitas`, `Community`
-- **Deskripsi Komunitas**: `Deskripsi Komunitas`, `Deskripsi`, `Kegiatan`
-- **Nama PIC**: `Nama PIC Komunitas`, `PIC`, `Ketua`, `Founder`
-- **Email PIC**: `Email PIC`, `Email`
-- **Nomor HP PIC**: `Nomor HP PIC`, `No HP`, `WhatsApp`
+---
+
+## 📋 Format File Input
+
+File input dapat berupa `.xlsx` atau `.csv`. Header kolom otomatis terdeteksi (case-insensitive):
+- **Nama**: `Nama`, `Name`, `Full Name`
+- **Nomor HP**: `Nomor HP`, `No HP`, `Phone`, `Telepon`, `WhatsApp`
+- **Email**: `Email`, `Alamat Email`, `Mail`
+- **Foto (Opsional)**: `Foto`, `Photo`, `Avatar`
 
 Contoh:
-| Nama Komunitas | Deskripsi Komunitas | Nama PIC Komunitas | Email PIC | Nomor HP PIC |
-| :--- | :--- | :--- | :--- | :--- |
-| Indonesian Cloud Community | Komunitas praktisi cloud computing & DevOps di Jakarta | Faisal Reza | faisal@gmail.com | 08123456789 |
-| Peduli Sampah Jogja | Gerakan relawan bank sampah & aksi bersih sungai | Yogi Atmaja | ogijogjaaa@gmail.com | 08571234567 |
 
-### 🚀 Output yang Dihasilkan di Kolom `Community Intelligence`:
-```text
-Sosmed Komunitas: IG: https://www.instagram.com/cloudcommunity.id/ (4.2k followers); FB Group: https://facebook.com/groups/cloudid; Linktree: https://linktr.ee/cloudcommunity
-Daerah / Wilayah: Jakarta (Jabodetabek)
-Komunitas Lain Kelolaan PIC: DevOps Forum Indonesia, Yayasan Edukasi Teknologi
-Komunitas Sejenis di Jakarta: Jakarta Tech Community, Python Developers Group, Kopi & Cloud
-Profil PIC: Nama: Faisal Reza | No HP/WA: 08123456789 | Email: faisal@gmail.com | Platform Aktif: office365, spotify, twitter
-```
-
-### 🛠️ Cara Menjalankan:
-```bash
-# Mode Langsung
-python community_osint.py input_komunitas.xlsx
-
-# Mode 2-Pass Cache (Direkomendasikan untuk data banyak)
-python community_osint.py input_komunitas.xlsx --search-cache cache.json --dump-queries queries.json --no-live-search
-```
+| Nama | No HP | Email | Kota |
+| :--- | :--- | :--- | :--- |
+| Example Target A | 081200000001 | target_a@example.com | Jakarta |
+| Example Target B | 085700000002 | target_b@example.com | Bandung |
+| Example Target C | 081300000003 | target_c@example.com | Surabaya |
 
 ---
 
-## 👤 2. Person Outreach & AI Face Match (`bulk_osint.py`)
-
-Dirancang untuk menemukan kanal media sosial konsumen (IG, TikTok, FB, Threads, WhatsApp) dari calon customer.
-
-- **Email Pre-check (Holehe)**: Memverifikasi akun aktif sebelum pencarian.
-- **Auto-Feedback Loop**: Menemukan nama asli dari username email jika nama awal kosong.
-- **Sub-name Combinations**: Memecah nama 3–4 kata agar tetap menemukan akun IG yang hanya memakai 2 kata.
-- **AI Face Recognition (YuNet + SFace)**: Pencocokan biometrik wajah 100% di CPU lokal via `--face-match`.
-
-### 🛠️ Cara Menjalankan:
-```bash
-# Mode Cepat
-python bulk_osint.py input_nasabah.xlsx
-
-# Mode dengan AI Face Recognition
-python bulk_osint.py input_nasabah.xlsx --face-match
-```
-
----
-
-## 📦 Instalasi
+## 🛠️ Cara Penggunaan
 
 Pastikan menggunakan Python 3.10+ (disarankan Python 3.12).
 
 ```bash
+# Clone repository
 git clone https://github.com/temonwkwk/osint-person-lookup.git
 cd osint-person-lookup
+
+# Install dependency
 pip install -r requirements.txt
 ```
+
+### 1. Mode Standar Cepat (Tanpa Face Match)
+```bash
+python bulk_osint.py input.xlsx
+```
+
+### 2. Mode AI Face Matching (Pencocokan Wajah di CPU Lokal)
+```bash
+python bulk_osint.py input.xlsx --face-match
+```
+
+### 3. Mode 2-Pass Cache (Untuk Data Besar / Anti Rate-Limit)
+```bash
+# Step 1: Dump queries
+python bulk_osint.py input.xlsx --search-cache cache.json --dump-queries queries.json --no-live-search --skip-holehe
+
+# Step 2: Ambil hasil search ke cache.json
+
+# Step 3: Eksekusi analisis penuh dari cache
+python bulk_osint.py input.xlsx --search-cache cache.json --face-match
+```
+
+---
+
+## 📊 Format Output Kolom `Notes` (Outreach Ready)
+
+```text
+Sosmed Utama (Outreach): IG: https://www.instagram.com/example_user/ (12.5k followers | WA: 081200000001 | Wajah Cocok: 88%) [Terverifikasi Email]; FB: https://www.facebook.com/example_user
+Kanal DM / Outreach: Instagram DM (@example_user) | WhatsApp: 081200000001
+Profil Profesional: LinkedIn: https://www.linkedin.com/in/example-user
+Minat & Komunitas (Ice Breaker): Tech & Startups, Running Club, Volunteer
+Email terdaftar di: office365, spotify, twitter
+Catatan: data cocok 100% terverifikasi
+```
+
+---
+
+## 🔒 Privasi & Keamanan Data
+
+- Repository ini **tidak menyimpan data pribadi atau hasil investigasi nyata**.
+- Seluruh file data (`target*.xlsx`, `cache.json`, `queries.json`) otomatis diabaikan oleh `.gitignore`.
 
 ---
 
