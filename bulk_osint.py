@@ -232,8 +232,8 @@ def match_score(name: str, handle: str, title: str, is_holehe_verified: bool = F
     """How strongly a candidate profile matches the target name.
 
     Scoring:
-      2.0  every name token appears in the result title (strongest)
-      1.0  every name token appears inside the handle
+      2.0  every name token appears in the result title/handle (full match)
+      1.5  majority / sub-combination of name tokens appear (for 3+ word names)
       +0.3 the full name appears as a contiguous string in the title
       +0.5 platform confirmed registered via Holehe for this email
     Below 1.0 the candidate is rejected as a probable different person.
@@ -245,17 +245,24 @@ def match_score(name: str, handle: str, title: str, is_holehe_verified: bool = F
     tl = re.sub(re.escape(handle.lower().replace(".", " ")), " ", tl)
     hl = handle.lower()
     score = 0.0
-    if all(t in tl for t in toks):
+
+    in_title = set(t for t in toks if t in tl)
+    in_handle = set(t for t in toks if t in hl)
+    combined = in_title | in_handle
+
+    if len(combined) == len(toks):
         score += 2.0
-    if all(t in hl for t in toks):
-        score += 1.0
-    if re.sub(r"[^a-z0-9]+", " ", name.lower()).strip() in re.sub(r"[^a-z0-9]+", " ", tl):
-        score += 0.3
-    # partial credit only when the rare (longest) token matches
-    if score == 0.0:
+    elif len(combined) >= 2 and len(combined) >= len(toks) / 2:
+        score += 1.5  # Sub-combination match (e.g. 2 of 3 words, or 2-3 of 4 words)
+    elif len(combined) == 1:
         longest = max(toks, key=len)
-        if len(longest) >= 6 and (longest in tl or longest in hl):
-            score += 0.6
+        if len(longest) >= 6 and longest in combined:
+            score += 0.8
+
+    # Contiguous sub-phrase match
+    clean_title_raw = title.lower()
+    if re.sub(r"[^a-z0-9]+", " ", name.lower()).strip() in re.sub(r"[^a-z0-9]+", " ", clean_title_raw):
+        score += 0.3
 
     # Bonus confidence if the platform is proven registered for the target email
     if is_holehe_verified and score >= 1.0:
@@ -379,6 +386,32 @@ OUTREACH_PLATFORM_TERMS = [
 ]
 
 
+def name_combinations(name: str) -> list[str]:
+    """Generate meaningful 2-word and 3-word combinations for names with > 2 words."""
+    words = [w.strip() for w in re.split(r"[^a-zA-Z0-9]+", name) if len(w) >= 2]
+    if len(words) <= 2:
+        return []
+    combos = []
+    # 1. Consecutive bigrams (e.g. Kanzul Faisal, Faisal Alam, Alam Mina)
+    for i in range(len(words) - 1):
+        combos.append(f"{words[i]} {words[i+1]}")
+    # 2. First + Last (e.g. Kanzul Mina, Arviandri Zaki)
+    first_last = f"{words[0]} {words[-1]}"
+    if first_last not in combos:
+        combos.append(first_last)
+    # 3. Trigrams if 4+ words
+    if len(words) >= 4:
+        for i in range(len(words) - 2):
+            combos.append(f"{words[i]} {words[i+1]} {words[i+2]}")
+    seen = set()
+    out = []
+    for c in combos:
+        if c.lower() not in seen:
+            seen.add(c.lower())
+            out.append(c)
+    return out
+
+
 def customer_outreach_queries(name: str, verified_platforms: list[str] | None = None,
                               all_platforms: list[str] | None = None) -> list[str]:
     """Generate search queries prioritizing Customer Outreach channels (IG, TikTok, FB)."""
@@ -394,7 +427,15 @@ def customer_outreach_queries(name: str, verified_platforms: list[str] | None = 
     # 1. Base consumer social search
     add_q(f'"{name}" site:instagram.com OR site:tiktok.com OR site:facebook.com')
 
-    # 2. Prioritized queries for platforms verified in Holehe
+    # 2. Sub-name combinations for names with > 2 words (Targeted Instagram & Socials)
+    combos = name_combinations(name)
+    for c in combos:
+        add_q(f'site:instagram.com "{c}"')
+        add_q(f'"{c}" instagram')
+        add_q(f'site:tiktok.com "{c}"')
+        add_q(f'site:facebook.com "{c}"')
+
+    # 3. Prioritized queries for platforms verified in Holehe
     if verified_platforms:
         for vp in verified_platforms:
             v_clean = vp.lower().strip()
@@ -408,7 +449,7 @@ def customer_outreach_queries(name: str, verified_platforms: list[str] | None = 
                     add_q(f'"{name}" {short_name}')
                     add_q(f'"{name}" site:{v_clean}')
 
-    # 3. Direct platform search in priority order (IG -> TikTok -> FB -> X -> LinkedIn)
+    # 4. Direct platform search in priority order (IG -> TikTok -> FB -> X -> LinkedIn)
     wanted = all_platforms or [p for p, _ in OUTREACH_PLATFORM_TERMS]
     for plat, term in OUTREACH_PLATFORM_TERMS:
         if plat in wanted:
